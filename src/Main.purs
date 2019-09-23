@@ -6,13 +6,22 @@ import Data.Array (uncons, mapWithIndex)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
+import Data.Traversable (for_)
 import Effect (Effect)
+import Effect.Aff (launchAff_)
+import Effect.Class (liftEffect)
 import Effect.Console (logShow)
+import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, query_)
 import SQL (JoinExpr, ScalarExpr, SelectExpr(..), SelectTerm(..), and, equal, isNull, join, leftJoin, nullIf, or, plus, query, (..))
 
 main :: Effect Unit
 main = do
-  logShow matchRows
+  conn <- createConnection $ defaultConnectionInfo {database = "uconnverts", password = "Master", user = "Master"}
+  launchAff_ do
+    result :: Array {localityid :: Int, rownumber :: Int} <- query_ (show matchRows) conn
+    for_ result \r -> do
+      liftEffect $ logShow r
+    liftEffect $ closeConnection conn
 
 
 type MappingItem = {columnName :: String, columnType :: ColumnType, id :: Int}
