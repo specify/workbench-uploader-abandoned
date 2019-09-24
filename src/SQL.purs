@@ -28,7 +28,7 @@ data SelectTerm = SelectTerm ScalarExpr | SelectAs String ScalarExpr
 
 toSql :: SelectTerm -> String
 toSql (SelectTerm s) = unwrap s
-toSql (SelectAs alias s) = "(" <> (unwrap s) <> ") as  " <> alias
+toSql (SelectAs alias s) = "(" <> (unwrap s) <> ") as " <> alias
 
 instance showSelectExpr :: Show SelectExpr where
   show (Table s) = s
@@ -97,3 +97,6 @@ star = SelectTerm $ wrap "*"
 
 notIn :: ScalarExpr -> Array ScalarExpr -> ScalarExpr
 notIn value values = wrap $ unwrap value <> " not in (" <> intercalate ", " (map unwrap values) <> ")"
+
+insertFrom :: SelectExpr -> Array String -> String -> String
+insertFrom select columns table = "insert into " <> table <> "(\n" <> (intercalate ",\n" columns) <> "\n) " <> show select

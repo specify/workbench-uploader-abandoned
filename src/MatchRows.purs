@@ -1,12 +1,12 @@
-module MatchRows (matchRows, selectForInsert) where
+module MatchRows (matchRows, selectForInsert, insertNewVals) where
 
 import Prelude
 
-import Data.Array (mapWithIndex, nub, uncons)
+import Data.Array (intercalate, mapWithIndex, nub, uncons)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
-import SQL (Alias, JoinExpr, ScalarExpr(..), SelectExpr(..), SelectTerm(..), and, as, equal, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, (..))
+import SQL (Alias, JoinExpr, ScalarExpr(..), SelectExpr(..), SelectTerm(..), and, as, equal, insertFrom, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, (..))
 import UploadPlan (ColumnType(..), MappingItem)
 
 
@@ -64,14 +64,20 @@ selectNewVals wbId mappingItems matched =
   (Just $ (r .. "workbenchid") `equal` (wrap $ show wbId) `and` (excludeMatched r matched))
   where (r :: Alias) = wrap "r"
 
-selectForInsert :: Int -> Array MappingItem -> Array SelectTerm -> Array Int -> SelectExpr
+selectForInsert :: Int -> Array MappingItem -> Array {columnName :: String, value :: String} -> Array Int -> SelectExpr
 selectForInsert wbId mappingItems extraFields matched =
-  query ([star] <> extraFields)
+  query ([star] <> extraFields_)
   (selectNewVals wbId mappingItems matched `as` newValues)
   []
   Nothing
   where (newValues :: Alias) = wrap "newvalues"
+        extraFields_ = (\{columnName, value} -> SelectAs columnName $ wrap value) `map` extraFields
 
 excludeMatched :: Alias -> Array Int -> ScalarExpr
 excludeMatched row matched = (row .. "rownumber") `notIn` rowList
   where rowList = map (show >>> wrap) $ nub matched
+
+insertNewVals :: String -> Int -> Array MappingItem -> Array {columnName :: String, value :: String} -> Array Int -> String
+insertNewVals table wbId mappingItems extraFields matched =
+  insertFrom (selectForInsert wbId mappingItems extraFields matched) columns table
+  where columns = map _.columnName mappingItems <> map _.columnName extraFields

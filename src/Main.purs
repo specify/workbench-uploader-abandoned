@@ -10,8 +10,8 @@ import Effect.Aff (launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Console (log, logShow)
 import Foreign (Foreign)
-import MatchRows (matchRows, selectForInsert)
-import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, query_)
+import MatchRows (insertNewVals, matchRows, selectForInsert)
+import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
 import MySQL.Transaction as T
 import SQL (SelectExpr(..), SelectTerm(..), equal, query, queryDistinct, (..))
 import Simple.JSON (write, writeJSON)
@@ -19,19 +19,25 @@ import UploadPlan (ColumnType(..), MappingItem)
 
 main :: Effect Unit
 main = do
-  logShow matchRows_
+  -- logShow matchRows_
 
   conn <- createConnection $ defaultConnectionInfo {database = "uconnverts", password = "Master", user = "Master"}
   launchAff_ do
     T.begin conn
     matchedRows :: Array {localityid :: Int, rownumber :: Int} <- query_ (show matchRows_) conn
 
-    let sfi = selectForInsert_ $ map (_.rownumber) matchedRows
-    liftEffect $ logShow $ sfi
+    -- let sfi = selectForInsert_ $ map (_.rownumber) matchedRows
+    -- liftEffect $ logShow $ sfi
 
-    (result2 :: Array Foreign) <- query_ (show sfi ) conn
-    for_ result2 \r -> do
-      liftEffect $ log $ writeJSON r
+    -- (result2 :: Array Foreign) <- query_ (show sfi ) conn
+    -- for_ result2 \r -> do
+    --   liftEffect $ log $ writeJSON r
+
+    let insert = insertNewVals "locality" 27 mappingItems extraFields $ map (_.rownumber) matchedRows
+    liftEffect $ log insert
+
+    execute_ insert conn
+
     T.rollback conn
     liftEffect $ closeConnection conn
 
@@ -53,7 +59,10 @@ matchRows_ :: SelectExpr
 matchRows_ = matchRows 27 mappingItems (Table "locality") (\t -> Just $ (t .. "disciplineid") `equal` wrap "3") "localityid"
 
 selectForInsert_ :: Array Int -> SelectExpr
-selectForInsert_ =
-  selectForInsert 27 mappingItems
-  [SelectAs "srclatlongunit" $ wrap "0", SelectAs "disciplineid" $ wrap "3", SelectAs "timestamp" $ wrap "now()" ]
+selectForInsert_ = selectForInsert 27 mappingItems extraFields
 
+extraFields :: Array {columnName :: String, value :: String}
+extraFields = [ {columnName: "srclatlongunit", value: "0"}
+               , {columnName: "disciplineid", value: "3"}
+               , {columnName: "timestampcreated", value: "now()"}
+               ]
