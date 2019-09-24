@@ -30,8 +30,8 @@ type MappingItem = {columnName :: String, columnType :: ColumnType, id :: Int}
 data ColumnType = StringType | DoubleType | IntType | DecimalType
 
 
-mappingItems :: Array MappingItem
-mappingItems = [ {columnName: "shortName", columnType: StringType, id: 1907 }
+mappingItems' :: Array MappingItem
+mappingItems' = [ {columnName: "shortName", columnType: StringType, id: 1907 }
                , {columnName: "localityName", columnType: StringType, id: 1908 }
                , {columnName: "Text2", columnType: StringType, id: 1913 }
                , {columnName: "verbatimElevation", columnType: StringType, id: 1930 }
@@ -44,21 +44,24 @@ mappingItems = [ {columnName: "shortName", columnType: StringType, id: 1907 }
                ]
 
 matchRows :: SelectExpr
-matchRows = query [SelectTerm $ t .. "localityid", SelectTerm $ wb .. "rownumber"]
-            (Table "locality" `as` t) joinWB (Just $ (t .. "disciplineid") `equal` wrap "3")
+matchRows = matchRows' mappingItems' (Table "locality") (\t -> Just $ (t .. "disciplineid") `equal` wrap "3") "localityid"
+
+matchRows' :: Array MappingItem -> SelectExpr -> (Alias -> Maybe ScalarExpr) -> String -> SelectExpr
+matchRows' mappingItems matchTable whereExpr idCol =
+  query [SelectTerm $ t .. idCol, SelectTerm $ wb .. "rownumber"] (matchTable `as` t) joinWB (whereExpr t)
   where
     (t :: Alias) = wrap "t"
     (wb :: Alias) = wrap "wb"
     joinWB = case uncons $ map compValues mappingItems of
-      Just { head: c, tail: cs } ->  [join rowsFromWB wb $ Just (foldl1 and (c :| cs))]
+      Just { head: c, tail: cs } ->  [join (rowsFromWB mappingItems) wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
 
-rowsFromWB :: SelectExpr
-rowsFromWB = query
-             (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "rownumber"])
-             (Table "workbenchrow" `as` r)
-             (mapWithIndex makeJoinWB mappingItems)
-             (Just $ (r .. "workbenchid") `equal` wrap "27")
+rowsFromWB :: Array MappingItem -> SelectExpr
+rowsFromWB mappingItems = query
+                          (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "rownumber"])
+                          (Table "workbenchrow" `as` r)
+                          (mapWithIndex makeJoinWB mappingItems)
+                          (Just $ (r .. "workbenchid") `equal` wrap "27")
   where (r :: Alias) = wrap "r"
 
 compValues :: MappingItem -> ScalarExpr
