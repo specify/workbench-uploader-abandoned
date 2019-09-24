@@ -8,22 +8,30 @@ import Data.Traversable (for_)
 import Effect (Effect)
 import Effect.Aff (launchAff_)
 import Effect.Class (liftEffect)
-import Effect.Console (logShow)
-import MatchRows (matchRows)
+import Effect.Console (log, logShow)
+import Foreign (Foreign)
+import MatchRows (matchRows, selectForInsert)
 import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, query_)
 import MySQL.Transaction as T
-import SQL (SelectExpr(..), equal, (..))
+import SQL (SelectExpr(..), SelectTerm(..), equal, query, queryDistinct, (..))
+import Simple.JSON (write, writeJSON)
 import UploadPlan (ColumnType(..), MappingItem)
 
 main :: Effect Unit
 main = do
   logShow matchRows_
+
   conn <- createConnection $ defaultConnectionInfo {database = "uconnverts", password = "Master", user = "Master"}
   launchAff_ do
     T.begin conn
-    result :: Array {localityid :: Int, rownumber :: Int} <- query_ (show matchRows_) conn
-    for_ result \r -> do
-      liftEffect $ logShow r
+    matchedRows :: Array {localityid :: Int, rownumber :: Int} <- query_ (show matchRows_) conn
+
+    let sfi = selectForInsert_ $ map (_.rownumber) matchedRows
+    liftEffect $ logShow $ sfi
+
+    (result2 :: Array Foreign) <- query_ (show sfi ) conn
+    for_ result2 \r -> do
+      liftEffect $ log $ writeJSON r
     T.rollback conn
     liftEffect $ closeConnection conn
 
@@ -44,13 +52,8 @@ mappingItems = [ {columnName: "shortName", columnType: StringType, id: 1907 }
 matchRows_ :: SelectExpr
 matchRows_ = matchRows 27 mappingItems (Table "locality") (\t -> Just $ (t .. "disciplineid") `equal` wrap "3") "localityid"
 
---   "select\n" <> (intercalate ",\n" $ mapWithIndex makeSelectWB mappingItems) <> """,
--- now()                                timestampcreated,
--- 0                                    srclatlongunit,
--- 3                                    disciplineid,
--- r.rownumber
--- from workbenchrow r
--- """ <> (intercalate "\n" $ mapWithIndex makeJoin mappingItems) <> """
--- where r.workbenchid = 27
--- """
+selectForInsert_ :: Array Int -> SelectExpr
+selectForInsert_ =
+  selectForInsert 27 mappingItems
+  [SelectAs "srclatlongunit" $ wrap "0", SelectAs "disciplineid" $ wrap "3", SelectAs "timestamp" $ wrap "now()" ]
 

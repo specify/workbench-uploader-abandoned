@@ -1,12 +1,12 @@
-module MatchRows (matchRows) where
+module MatchRows (matchRows, selectForInsert) where
 
 import Prelude
 
-import Data.Array (uncons, mapWithIndex)
+import Data.Array (mapWithIndex, nub, uncons)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
-import SQL (Alias, JoinExpr, ScalarExpr, SelectExpr(..), SelectTerm(..), and, as, equal, isNull, join, leftJoin, nullIf, or, plus, query, (..))
+import SQL (Alias, JoinExpr, ScalarExpr(..), SelectExpr(..), SelectTerm(..), and, as, equal, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, (..))
 import UploadPlan (ColumnType(..), MappingItem)
 
 
@@ -55,3 +55,23 @@ makeSelectWB i item = SelectAs item.columnName (parseValue item.columnType value
   where value = (wrap $ "c" <> (show i)) .. "celldata"
 
 
+selectNewVals :: Int -> Array MappingItem -> Array Int -> SelectExpr
+selectNewVals wbId mappingItems matched =
+  queryDistinct
+  (mapWithIndex makeSelectWB mappingItems)
+  (Table "workbenchrow" `as` r)
+  (mapWithIndex makeJoinWB mappingItems)
+  (Just $ (r .. "workbenchid") `equal` (wrap $ show wbId) `and` (excludeMatched r matched))
+  where (r :: Alias) = wrap "r"
+
+selectForInsert :: Int -> Array MappingItem -> Array SelectTerm -> Array Int -> SelectExpr
+selectForInsert wbId mappingItems extraFields matched =
+  query ([star] <> extraFields)
+  (selectNewVals wbId mappingItems matched `as` newValues)
+  []
+  Nothing
+  where (newValues :: Alias) = wrap "newvalues"
+
+excludeMatched :: Alias -> Array Int -> ScalarExpr
+excludeMatched row matched = (row .. "rownumber") `notIn` rowList
+  where rowList = map (show >>> wrap) $ nub matched

@@ -35,8 +35,14 @@ instance showSelectExpr :: Show SelectExpr where
   show (Query s) = s
 
 query :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> SelectExpr
-query selectTerms fromExpr joinExprs whereExpr = Query $
-  "select\n" <>
+query = query' "select\n"
+
+queryDistinct :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> SelectExpr
+queryDistinct = query' "select distinct\n"
+
+query' :: forall f g. Traversable f => Traversable g => String -> f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> SelectExpr
+query' selectType selectTerms fromExpr joinExprs whereExpr = Query $
+  selectType <>
   (intercalate ",\n" $ map toSql $ selectTerms) <> "\n" <>
   (unwrap fromExpr) <> "\n" <>
   (intercalate "\n" $ map unwrap $ joinExprs) <> "\n" <>
@@ -85,3 +91,9 @@ as :: SelectExpr -> Alias -> FromExpr
 as select alias = wrap case select of
   Table t -> "from " <> t <> " " <> unwrap alias
   Query q -> "from (\n" <> q <> "\n) " <> unwrap alias
+
+star :: SelectTerm
+star = SelectTerm $ wrap "*"
+
+notIn :: ScalarExpr -> Array ScalarExpr -> ScalarExpr
+notIn value values = wrap $ unwrap value <> " not in (" <> intercalate ", " (map unwrap values) <> ")"
