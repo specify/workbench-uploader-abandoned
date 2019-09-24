@@ -9,7 +9,8 @@ import Effect (Effect)
 import Effect.Aff (launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Console (logShow)
-import MatchRows (ColumnType(..), MappingItem, matchRows)
+import UploadPlan (ColumnType(..), MappingItem)
+import MatchRows (matchRows)
 import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, query_)
 import SQL (SelectExpr(..), equal, (..))
 
@@ -38,7 +39,7 @@ mappingItems = [ {columnName: "shortName", columnType: StringType, id: 1907 }
                ]
 
 matchRows_ :: SelectExpr
-matchRows_ = matchRows mappingItems (Table "locality") (\t -> Just $ (t .. "disciplineid") `equal` wrap "3") "localityid"
+matchRows_ = matchRows 27 mappingItems (Table "locality") (\t -> Just $ (t .. "disciplineid") `equal` wrap "3") "localityid"
 
 --   "select\n" <> (intercalate ",\n" $ mapWithIndex makeSelectWB mappingItems) <> """,
 -- now()                                timestampcreated,

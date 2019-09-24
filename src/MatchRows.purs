@@ -1,4 +1,4 @@
-module MatchRows (MappingItem, ColumnType(..), matchRows) where
+module MatchRows (matchRows) where
 
 import Prelude
 
@@ -7,29 +7,27 @@ import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import SQL (Alias, JoinExpr, ScalarExpr, SelectExpr(..), SelectTerm(..), and, as, equal, isNull, join, leftJoin, nullIf, or, plus, query, (..))
+import UploadPlan (ColumnType(..), MappingItem)
 
 
-type MappingItem = {columnName :: String, columnType :: ColumnType, id :: Int}
 
-data ColumnType = StringType | DoubleType | IntType | DecimalType
-
-
-matchRows :: Array MappingItem -> SelectExpr -> (Alias -> Maybe ScalarExpr) -> String -> SelectExpr
-matchRows mappingItems matchTable whereExpr idCol =
+matchRows :: Int -> Array MappingItem -> SelectExpr -> (Alias -> Maybe ScalarExpr) -> String -> SelectExpr
+matchRows wbId mappingItems matchTable whereExpr idCol =
   query [SelectTerm $ t .. idCol, SelectTerm $ wb .. "rownumber"] (matchTable `as` t) joinWB (whereExpr t)
   where
     (t :: Alias) = wrap "t"
     (wb :: Alias) = wrap "wb"
     joinWB = case uncons $ map compValues mappingItems of
-      Just { head: c, tail: cs } ->  [join (rowsFromWB mappingItems) wb $ Just (foldl1 and (c :| cs))]
+      Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
 
-rowsFromWB :: Array MappingItem -> SelectExpr
-rowsFromWB mappingItems = query
-                          (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "rownumber"])
-                          (Table "workbenchrow" `as` r)
-                          (mapWithIndex makeJoinWB mappingItems)
-                          (Just $ (r .. "workbenchid") `equal` wrap "27")
+rowsFromWB :: Int -> Array MappingItem -> SelectExpr
+rowsFromWB wbId mappingItems =
+  query
+  (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "rownumber"])
+  (Table "workbenchrow" `as` r)
+  (mapWithIndex makeJoinWB mappingItems)
+  (Just $ (r .. "workbenchid") `equal` (wrap $ show wbId))
   where (r :: Alias) = wrap "r"
 
 compValues :: MappingItem -> ScalarExpr
