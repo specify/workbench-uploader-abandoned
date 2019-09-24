@@ -80,3 +80,8 @@ nullIf x y = wrap $ "nullif(" <> (unwrap x) <> ", " <> (unwrap y) <>")"
 
 plus :: ScalarExpr -> ScalarExpr -> ScalarExpr
 plus x y = wrap $ "(" <> (unwrap x) <> " + " <> (unwrap y) <> ")"
+
+as :: SelectExpr -> Alias -> FromExpr
+as select alias = wrap case select of
+  Table t -> "from " <> t <> " " <> unwrap alias
+  Query q -> "from (\n" <> q <> "\n) " <> unwrap alias

@@ -12,10 +12,11 @@ import Effect.Aff (launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Console (logShow)
 import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, query_)
-import SQL (JoinExpr, ScalarExpr, SelectExpr(..), SelectTerm(..), and, equal, isNull, join, leftJoin, nullIf, or, plus, query, (..))
+import SQL (Alias, JoinExpr, ScalarExpr, SelectExpr(..), SelectTerm(..), and, as, equal, isNull, join, leftJoin, nullIf, or, plus, query, (..))
 
 main :: Effect Unit
 main = do
+  logShow matchRows
   conn <- createConnection $ defaultConnectionInfo {database = "uconnverts", password = "Master", user = "Master"}
   launchAff_ do
     result :: Array {localityid :: Int, rownumber :: Int} <- query_ (show matchRows) conn
@@ -43,33 +44,36 @@ mappingItems = [ {columnName: "shortName", columnType: StringType, id: 1907 }
                ]
 
 matchRows :: SelectExpr
-matchRows = query [SelectTerm $ wrap "l.localityid", SelectTerm $ wrap "wb.rownumber"]
-            (wrap "from locality l") joinWB (Just $ wrap "l.disciplineid = 3")
+matchRows = query [SelectTerm $ t .. "localityid", SelectTerm $ wb .. "rownumber"]
+            (Table "locality" `as` t) joinWB (Just $ (t .. "disciplineid") `equal` wrap "3")
   where
+    (t :: Alias) = wrap "t"
+    (wb :: Alias) = wrap "wb"
     joinWB = case uncons $ map compValues mappingItems of
-      Just { head: c, tail: cs } ->  [join rowsFromWB (wrap "wb") $ Just (foldl1 and (c :| cs))]
+      Just { head: c, tail: cs } ->  [join rowsFromWB wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
 
 rowsFromWB :: SelectExpr
 rowsFromWB = query
-             (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ wrap "r.rownumber"])
-             (wrap "from workbenchrow r")
+             (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "rownumber"])
+             (Table "workbenchrow" `as` r)
              (mapWithIndex makeJoinWB mappingItems)
-             (Just $ wrap "r.workbenchid = 27")
-
+             (Just $ (r .. "workbenchid") `equal` wrap "27")
+  where (r :: Alias) = wrap "r"
 
 compValues :: MappingItem -> ScalarExpr
 compValues item = case item.columnType of
   StringType -> (v1 `equal` v2) `or` (isNull v1 `and` isNull v2) `or` (isNull v1 `and` (v2 `equal` wrap "''"))
   otherwise -> (v1 `equal` v2) `or` (isNull v1 `and` isNull v2)
-  where v1 = wrap $ "l." <> item.columnName
-        v2 = wrap $ "wb." <> item.columnName
+  where v1 = wrap "t" .. item.columnName
+        v2 = wrap "wb" .. item.columnName
 
 makeJoinWB :: Int -> MappingItem -> JoinExpr
 makeJoinWB i item = leftJoin (Table "workbenchdataitem") dataItem $ Just $
-                    ((dataItem .. "workbenchrowid") `equal` (wrap "r.workbenchrowid")) `and`
+                    ((dataItem .. "workbenchrowid") `equal` (r .. "workbenchrowid")) `and`
                     ((dataItem .. "workbenchtemplatemappingitemid") `equal` (wrap $ show item.id))
-  where dataItem = wrap ("c" <> (show i))
+  where (dataItem :: Alias) = wrap ("c" <> (show i))
+        (r :: Alias) = wrap "r"
 
 parseValue :: ColumnType -> ScalarExpr -> ScalarExpr
 parseValue StringType value = value
