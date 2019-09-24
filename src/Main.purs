@@ -9,19 +9,22 @@ import Effect (Effect)
 import Effect.Aff (launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Console (logShow)
-import UploadPlan (ColumnType(..), MappingItem)
 import MatchRows (matchRows)
 import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, query_)
+import MySQL.Transaction as T
 import SQL (SelectExpr(..), equal, (..))
+import UploadPlan (ColumnType(..), MappingItem)
 
 main :: Effect Unit
 main = do
   logShow matchRows_
   conn <- createConnection $ defaultConnectionInfo {database = "uconnverts", password = "Master", user = "Master"}
   launchAff_ do
+    T.begin conn
     result :: Array {localityid :: Int, rownumber :: Int} <- query_ (show matchRows_) conn
     for_ result \r -> do
       liftEffect $ logShow r
+    T.rollback conn
     liftEffect $ closeConnection conn
 
 
