@@ -14,7 +14,6 @@ import Foreign (Foreign)
 import MatchRows (insertNewVals, matchRows, selectForInsert)
 import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
 import MySQL.Transaction as T
-import SQL (SelectExpr(..), SelectTerm(..), equal, query, queryDistinct, (..))
 import Simple.JSON (write, writeJSON)
 import UploadPlan (ColumnType(..), MappingItem, UploadTable)
 

@@ -6,12 +6,12 @@ import Data.Array (intercalate, mapWithIndex, nub, uncons)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
-import SQL (Alias, JoinExpr, ScalarExpr(..), SelectExpr(..), SelectTerm(..), and, as, equal, insertFrom, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, (..))
+import SQL (Alias, JoinExpr, ScalarExpr(..), Relation(..), SelectTerm(..), and, as, equal, insertFrom, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, (..))
 import UploadPlan (ColumnType(..), MappingItem, UploadTable)
 
 
 
-matchRows_ :: Int -> Array MappingItem -> SelectExpr -> (Alias -> Maybe ScalarExpr) -> String -> SelectExpr
+matchRows_ :: Int -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
 matchRows_ wbId mappingItems matchTable whereExpr idCol =
   query [SelectTerm $ t .. idCol, SelectTerm $ wb .. "rownumber"] (matchTable `as` t) joinWB (whereExpr t)
   where
@@ -21,14 +21,14 @@ matchRows_ wbId mappingItems matchTable whereExpr idCol =
       Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
 
-matchRows :: UploadTable -> SelectExpr
+matchRows :: UploadTable -> Relation
 matchRows ut = matchRows_ ut.workbenchId ut.mappingItems (Table ut.tableName) whereClause ut.idColumn
   where whereClause =
           \t -> map (\{head, tail} -> foldl1 and (head :| tail)) $
                 uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
                 ut.filters
 
-rowsFromWB :: Int -> Array MappingItem -> SelectExpr
+rowsFromWB :: Int -> Array MappingItem -> Relation
 rowsFromWB wbId mappingItems =
   query
   (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "rownumber"])
@@ -62,7 +62,7 @@ makeSelectWB i item = SelectAs item.columnName (parseValue item.columnType value
   where value = (wrap $ "c" <> (show i)) .. "celldata"
 
 
-selectNewVals :: Int -> Array MappingItem -> Array Int -> SelectExpr
+selectNewVals :: Int -> Array MappingItem -> Array Int -> Relation
 selectNewVals wbId mappingItems matched =
   queryDistinct
   (mapWithIndex makeSelectWB mappingItems)
@@ -71,7 +71,7 @@ selectNewVals wbId mappingItems matched =
   (Just $ (r .. "workbenchid") `equal` (wrap $ show wbId) `and` (excludeMatched r matched))
   where (r :: Alias) = wrap "r"
 
-selectForInsert :: Int -> Array MappingItem -> Array {columnName :: String, value :: String} -> Array Int -> SelectExpr
+selectForInsert :: Int -> Array MappingItem -> Array {columnName :: String, value :: String} -> Array Int -> Relation
 selectForInsert wbId mappingItems extraFields matched =
   query ([star] <> extraFields_)
   (selectNewVals wbId mappingItems matched `as` newValues)

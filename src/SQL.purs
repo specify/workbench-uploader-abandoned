@@ -22,7 +22,7 @@ derive instance newtypeJoinType :: Newtype JoinType _
 newtype Alias = Alias String
 derive instance newtypeAlias :: Newtype Alias _
 
-data SelectExpr = Table String | Query String
+data Relation = Table String | Query String
 
 data SelectTerm = SelectTerm ScalarExpr | SelectAs String ScalarExpr
 
@@ -30,17 +30,17 @@ toSql :: SelectTerm -> String
 toSql (SelectTerm s) = unwrap s
 toSql (SelectAs alias s) = "(" <> (unwrap s) <> ") as " <> alias
 
-instance showSelectExpr :: Show SelectExpr where
+instance showRelation :: Show Relation where
   show (Table s) = s
   show (Query s) = s
 
-query :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> SelectExpr
+query :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> Relation
 query = query' "select\n"
 
-queryDistinct :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> SelectExpr
+queryDistinct :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> Relation
 queryDistinct = query' "select distinct\n"
 
-query' :: forall f g. Traversable f => Traversable g => String -> f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> SelectExpr
+query' :: forall f g. Traversable f => Traversable g => String -> f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> Relation
 query' selectType selectTerms fromExpr joinExprs whereExpr = Query $
   selectType <>
   (intercalate ",\n" $ map toSql $ selectTerms) <> "\n" <>
@@ -50,7 +50,7 @@ query' selectType selectTerms fromExpr joinExprs whereExpr = Query $
     Just expr -> "where\n" <> (unwrap expr)
     Nothing -> ""
 
-join' :: JoinType -> SelectExpr -> Alias -> Maybe ScalarExpr -> JoinExpr
+join' :: JoinType -> Relation -> Alias -> Maybe ScalarExpr -> JoinExpr
 join' joinType source alias onExpr = wrap case source of
   Table name -> (unwrap joinType) <>  " " <> name <> " " <> (unwrap alias) <> on
   Query str -> (unwrap joinType) <> " (\n" <> str <> "\n) " <> (unwrap alias) <> on
@@ -58,11 +58,14 @@ join' joinType source alias onExpr = wrap case source of
           Just expr -> " on\n" <> (unwrap expr)
           Nothing -> "\n"
 
-join :: SelectExpr -> Alias -> Maybe ScalarExpr -> JoinExpr
+join :: Relation -> Alias -> Maybe ScalarExpr -> JoinExpr
 join = join' (wrap "join")
 
-leftJoin :: SelectExpr -> Alias -> Maybe ScalarExpr -> JoinExpr
+leftJoin :: Relation -> Alias -> Maybe ScalarExpr -> JoinExpr
 leftJoin = join' (wrap "left join")
+
+rightJoin :: Relation -> Alias -> Maybe ScalarExpr -> JoinExpr
+rightJoin = join' (wrap "right join")
 
 and :: ScalarExpr -> ScalarExpr -> ScalarExpr
 and a b = wrap $ "(" <> (unwrap a) <> ") and\n(" <> (unwrap b) <> ")"
@@ -87,7 +90,7 @@ nullIf x y = wrap $ "nullif(" <> (unwrap x) <> ", " <> (unwrap y) <>")"
 plus :: ScalarExpr -> ScalarExpr -> ScalarExpr
 plus x y = wrap $ "(" <> (unwrap x) <> " + " <> (unwrap y) <> ")"
 
-as :: SelectExpr -> Alias -> FromExpr
+as :: Relation -> Alias -> FromExpr
 as select alias = wrap case select of
   Table t -> "from " <> t <> " " <> unwrap alias
   Query q -> "from (\n" <> q <> "\n) " <> unwrap alias
@@ -98,5 +101,5 @@ star = SelectTerm $ wrap "*"
 notIn :: ScalarExpr -> Array ScalarExpr -> ScalarExpr
 notIn value values = wrap $ unwrap value <> " not in (" <> intercalate ", " (map unwrap values) <> ")"
 
-insertFrom :: SelectExpr -> Array String -> String -> String
+insertFrom :: Relation -> Array String -> String -> String
 insertFrom select columns table = "insert into " <> table <> "(\n" <> (intercalate ",\n" columns) <> "\n) " <> show select
