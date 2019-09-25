@@ -7,39 +7,48 @@ import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.Traversable (for_)
 import Effect (Effect)
-import Effect.Aff (launchAff_)
+import Effect.Aff (Aff, launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Console (log, logShow)
 import Foreign (Foreign)
 import MatchRows (insertNewVals, matchRows, selectForInsert)
-import MySQL.Connection (closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
+import MySQL.Connection (Connection, closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
 import MySQL.Transaction as T
 import Simple.JSON (write, writeJSON)
 import UploadPlan (ColumnType(..), MappingItem, UploadTable)
 
 main :: Effect Unit
 main = do
-  -- logShow matchRows_
-
   conn <- createConnection $ defaultConnectionInfo {database = "uconnverts", password = "Master", user = "Master"}
   launchAff_ do
     T.begin conn
-    matchedRows :: Array {localityid :: Int, rownumber :: Int} <- query_ (show $ matchRows uploadTable) conn
 
-
-    let insert = insertNewVals uploadTable $ map (_.rownumber) matchedRows
-    liftEffect $ log insert
-
-    execute_ insert conn
-
-    matchedRows :: Array {localityid :: Int, rownumber :: Int} <- query_ (show $ matchRows uploadTable) conn
-    liftEffect $ logShow $ length matchedRows
+    doIt conn
 
     T.rollback conn
     liftEffect $ closeConnection conn
 
-uploadTable :: UploadTable
-uploadTable =
+doIt :: Connection -> Aff Unit
+doIt conn = do
+  rowsToIds <- doUploadTable conn uploadTableDef
+  pure unit
+
+
+doUploadTable :: Connection -> UploadTable -> Aff (Array {recordid :: Int, rownumber :: Int})
+doUploadTable conn uploadTable = do
+  liftEffect $ log $ writeJSON {uploadingTable: uploadTable.tableName}
+
+  matchedRows :: Array {recordid :: Int, rownumber :: Int} <- query_ (show $ matchRows uploadTable) conn
+  liftEffect $ log $ writeJSON {matchedRows: matchedRows}
+
+  let insert = insertNewVals uploadTable $ map (_.rownumber) matchedRows
+  execute_ insert conn
+
+  query_ (show $ matchRows uploadTable) conn
+
+
+uploadTableDef :: UploadTable
+uploadTableDef =
   { workbenchId: 27
   , tableName: "locality"
   , idColumn: "localityid"

@@ -13,7 +13,7 @@ import UploadPlan (ColumnType(..), MappingItem, UploadTable)
 
 matchRows_ :: Int -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
 matchRows_ wbId mappingItems matchTable whereExpr idCol =
-  query [SelectTerm $ t .. idCol, SelectTerm $ wb .. "rownumber"] (matchTable `as` t) joinWB (whereExpr t)
+  query [SelectAs "recordid" $ t .. idCol, SelectTerm $ wb .. "rownumber"] (matchTable `as` t) joinWB (whereExpr t)
   where
     (t :: Alias) = wrap "t"
     (wb :: Alias) = wrap "wb"
