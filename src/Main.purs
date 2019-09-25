@@ -2,6 +2,7 @@ module Main where
 
 import Prelude
 
+import Data.Array (length)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.Traversable (for_)
@@ -15,7 +16,7 @@ import MySQL.Connection (closeConnection, createConnection, defaultConnectionInf
 import MySQL.Transaction as T
 import SQL (SelectExpr(..), SelectTerm(..), equal, query, queryDistinct, (..))
 import Simple.JSON (write, writeJSON)
-import UploadPlan (ColumnType(..), MappingItem)
+import UploadPlan (ColumnType(..), MappingItem, UploadTable)
 
 main :: Effect Unit
 main = do
@@ -24,45 +25,42 @@ main = do
   conn <- createConnection $ defaultConnectionInfo {database = "uconnverts", password = "Master", user = "Master"}
   launchAff_ do
     T.begin conn
-    matchedRows :: Array {localityid :: Int, rownumber :: Int} <- query_ (show matchRows_) conn
+    matchedRows :: Array {localityid :: Int, rownumber :: Int} <- query_ (show $ matchRows uploadTable) conn
 
-    -- let sfi = selectForInsert_ $ map (_.rownumber) matchedRows
-    -- liftEffect $ logShow $ sfi
 
-    -- (result2 :: Array Foreign) <- query_ (show sfi ) conn
-    -- for_ result2 \r -> do
-    --   liftEffect $ log $ writeJSON r
-
-    let insert = insertNewVals "locality" 27 mappingItems extraFields $ map (_.rownumber) matchedRows
+    let insert = insertNewVals uploadTable $ map (_.rownumber) matchedRows
     liftEffect $ log insert
 
     execute_ insert conn
 
+    matchedRows :: Array {localityid :: Int, rownumber :: Int} <- query_ (show $ matchRows uploadTable) conn
+    liftEffect $ logShow $ length matchedRows
+
     T.rollback conn
     liftEffect $ closeConnection conn
 
+uploadTable :: UploadTable
+uploadTable =
+  { workbenchId: 27
+  , tableName: "locality"
+  , idColumn: "localityid"
+  , filters: [{columnName: "disciplineid", value: "3"}]
+  , mappingItems:
+    [ {columnName: "shortName", columnType: StringType, id: 1907 }
+    , {columnName: "localityName", columnType: StringType, id: 1908 }
+    , {columnName: "Text2", columnType: StringType, id: 1913 }
+    , {columnName: "verbatimElevation", columnType: StringType, id: 1930 }
+    , {columnName: "minElevation", columnType: DoubleType, id: 1931 }
+    , {columnName: "maxElevation", columnType: DoubleType, id: 1932 }
+    , {columnName: "verbatimLatitude", columnType: StringType, id: 1938 }
+    , {columnName: "latitude1", columnType: DecimalType, id: 1939 }
+    , {columnName: "verbatimLongitude", columnType: StringType, id: 1940 }
+    , {columnName: "longitude1", columnType: DecimalType, id: 1941 }
+    ]
+  , staticValues:
+    [ {columnName: "srclatlongunit", value: "0"}
+    , {columnName: "disciplineid", value: "3"}
+    , {columnName: "timestampcreated", value: "now()"}
+    ]
+  }
 
-mappingItems :: Array MappingItem
-mappingItems = [ {columnName: "shortName", columnType: StringType, id: 1907 }
-               , {columnName: "localityName", columnType: StringType, id: 1908 }
-               , {columnName: "Text2", columnType: StringType, id: 1913 }
-               , {columnName: "verbatimElevation", columnType: StringType, id: 1930 }
-               , {columnName: "minElevation", columnType: DoubleType, id: 1931 }
-               , {columnName: "maxElevation", columnType: DoubleType, id: 1932 }
-               , {columnName: "verbatimLatitude", columnType: StringType, id: 1938 }
-               , {columnName: "latitude1", columnType: DecimalType, id: 1939 }
-               , {columnName: "verbatimLongitude", columnType: StringType, id: 1940 }
-               , {columnName: "longitude1", columnType: DecimalType, id: 1941 }
-               ]
-
-matchRows_ :: SelectExpr
-matchRows_ = matchRows 27 mappingItems (Table "locality") (\t -> Just $ (t .. "disciplineid") `equal` wrap "3") "localityid"
-
-selectForInsert_ :: Array Int -> SelectExpr
-selectForInsert_ = selectForInsert 27 mappingItems extraFields
-
-extraFields :: Array {columnName :: String, value :: String}
-extraFields = [ {columnName: "srclatlongunit", value: "0"}
-               , {columnName: "disciplineid", value: "3"}
-               , {columnName: "timestampcreated", value: "now()"}
-               ]

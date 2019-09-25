@@ -7,12 +7,12 @@ import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import SQL (Alias, JoinExpr, ScalarExpr(..), SelectExpr(..), SelectTerm(..), and, as, equal, insertFrom, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, (..))
-import UploadPlan (ColumnType(..), MappingItem)
+import UploadPlan (ColumnType(..), MappingItem, UploadTable)
 
 
 
-matchRows :: Int -> Array MappingItem -> SelectExpr -> (Alias -> Maybe ScalarExpr) -> String -> SelectExpr
-matchRows wbId mappingItems matchTable whereExpr idCol =
+matchRows_ :: Int -> Array MappingItem -> SelectExpr -> (Alias -> Maybe ScalarExpr) -> String -> SelectExpr
+matchRows_ wbId mappingItems matchTable whereExpr idCol =
   query [SelectTerm $ t .. idCol, SelectTerm $ wb .. "rownumber"] (matchTable `as` t) joinWB (whereExpr t)
   where
     (t :: Alias) = wrap "t"
@@ -20,6 +20,13 @@ matchRows wbId mappingItems matchTable whereExpr idCol =
     joinWB = case uncons $ map compValues mappingItems of
       Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
+
+matchRows :: UploadTable -> SelectExpr
+matchRows ut = matchRows_ ut.workbenchId ut.mappingItems (Table ut.tableName) whereClause ut.idColumn
+  where whereClause =
+          \t -> map (\{head, tail} -> foldl1 and (head :| tail)) $
+                uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
+                ut.filters
 
 rowsFromWB :: Int -> Array MappingItem -> SelectExpr
 rowsFromWB wbId mappingItems =
@@ -77,7 +84,13 @@ excludeMatched :: Alias -> Array Int -> ScalarExpr
 excludeMatched row matched = (row .. "rownumber") `notIn` rowList
   where rowList = map (show >>> wrap) $ nub matched
 
-insertNewVals :: String -> Int -> Array MappingItem -> Array {columnName :: String, value :: String} -> Array Int -> String
-insertNewVals table wbId mappingItems extraFields matched =
+insertNewVals_ :: String -> Int -> Array MappingItem -> Array {columnName :: String, value :: String} -> Array Int -> String
+insertNewVals_ table wbId mappingItems extraFields matched =
   insertFrom (selectForInsert wbId mappingItems extraFields matched) columns table
   where columns = map _.columnName mappingItems <> map _.columnName extraFields
+
+
+
+insertNewVals :: UploadTable -> Array Int -> String
+insertNewVals ut matchedRows =
+  insertNewVals_ ut.tableName ut.workbenchId ut.mappingItems ut.staticValues matchedRows
