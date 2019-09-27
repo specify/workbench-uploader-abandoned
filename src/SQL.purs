@@ -98,8 +98,9 @@ as select alias = wrap case select of
 star :: SelectTerm
 star = SelectTerm $ wrap "*"
 
-notIn :: ScalarExpr -> Array ScalarExpr -> ScalarExpr
-notIn value values = wrap $ unwrap value <> " not in (" <> intercalate ", " (map unwrap values) <> ")"
+notIn :: ScalarExpr -> Array ScalarExpr -> Maybe ScalarExpr
+notIn value [] = Nothing
+notIn value values = Just $ wrap $ unwrap value <> " not in (" <> intercalate ", " (map unwrap values) <> ")"
 
 insertFrom :: Relation -> Array String -> String -> String
 insertFrom select columns table = "insert into " <> table <> "(\n" <> (intercalate ",\n" columns) <> "\n) " <> show select
