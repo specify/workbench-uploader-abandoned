@@ -7,11 +7,11 @@ import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.Traversable (for, for_)
 import Effect (Effect)
-import Effect.Aff (Aff, launchAff_)
+import Effect.Aff (Aff, Error, error, launchAff_, throwError)
 import Effect.Class (liftEffect)
 import Effect.Console (log, logShow)
 import Foreign (Foreign)
-import MatchRows (insertNewVals, matchRows, selectForInsert)
+import MatchRows (MatchedRow, insertForeignKeyMapping, insertForeignKeyValues, insertNewVals, matchRows, selectForInsert, selectForeignKeyMapping)
 import MySQL.Connection (Connection, closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
 import MySQL.Transaction as T
 import SQL (Relation)
@@ -37,24 +37,35 @@ doIt conn = do
 logJSON :: ∀ a. WriteForeign a ⇒ a → Aff Unit
 logJSON value = liftEffect $ log $ writeJSON value
 
-doUploadTable :: Connection -> UploadTable -> Aff Relation
+doUploadTable :: Connection -> UploadTable -> Aff (Array MatchedRow)
 doUploadTable conn uploadTable = do
   logJSON {uploadingTable: uploadTable.tableName}
 
   toOnes <- for uploadTable.toOneTables \{foreignKey, table: (ToOne ut)} -> do
     matchedRows <- doUploadTable conn ut
-    pure {foreignKey: foreignKey, matchedRows: matchedRows}
 
-  matchedRows :: Array {recordid :: Int, rownumber :: Int} <- query_ (show $ matchRows uploadTable) conn
-  logJSON {matchedRows: matchedRows}
+    let insert = insertForeignKeyMapping 27 uploadTable.tableName foreignKey
+    execute_ insert conn
 
-  let insert = insertNewVals uploadTable toOnes $ map (_.rownumber) matchedRows
-  logJSON {insertingRecords: uploadTable.tableName}
-  liftEffect $ log insert
+    ids :: Array {id :: Int} <- flip query_ conn $ show $ selectForeignKeyMapping 27 uploadTable.tableName foreignKey
+    mappingItemId <- case ids of
+          [{id}] -> pure id
+          otherwise -> throwError $ error "failed inserting"
+
+    let insert2 = insertForeignKeyValues mappingItemId matchedRows
+    execute_ insert2 conn
+
+    pure {columnName: foreignKey, id: mappingItemId, columnType: IntType}
+
+  let uploadTable_ = uploadTable {mappingItems = uploadTable.mappingItems <> toOnes}
+
+  matchedRows :: Array MatchedRow <- query_ (show $ matchRows uploadTable_) conn
+
+  logJSON {insertingRecords: uploadTable_.tableName}
+  let insert = insertNewVals uploadTable_ $ map (_.rownumber) matchedRows
   execute_ insert conn
 
-  liftEffect $ logShow $ matchRows uploadTable
-  pure $ matchRows uploadTable
+  query_ (show $ matchRows uploadTable_) conn
 
 
 uploadTableDef :: UploadTable

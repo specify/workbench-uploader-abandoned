@@ -95,6 +95,10 @@ as select alias = wrap case select of
   Table t -> "from " <> t <> " " <> unwrap alias
   Query q -> "from (\n" <> q <> "\n) " <> unwrap alias
 
+from :: Relation -> FromExpr
+from (Table s) = wrap $ "from " <> s
+from (Query q) = wrap $ "from (\n" <> q <> "\n) " -- some alias may be required
+
 star :: SelectTerm
 star = SelectTerm $ wrap "*"
 
@@ -104,3 +108,17 @@ notIn value values = Just $ wrap $ unwrap value <> " not in (" <> intercalate ",
 
 insertFrom :: Relation -> Array String -> String -> String
 insertFrom select columns table = "insert into " <> table <> "(\n" <> (intercalate ",\n" columns) <> "\n) " <> show select
+
+insertValues :: Array (Array ScalarExpr) -> Array String -> String -> String
+insertValues values columns table =
+  "insert into " <> table <> "(\n" <> (intercalate ",\n" columns) <> "\n) values \n" <>
+  (intercalate ",\n" $ map valuesExpr values)
+  where
+    valuesExpr vs = "(" <> (intercalate ", " $ map unwrap vs) <> ")"
+
+stringLiteral :: String -> ScalarExpr
+stringLiteral s = wrap $ "'" <> s <> "'"
+
+intLiteral :: Int -> ScalarExpr
+intLiteral n = wrap $ show n
+

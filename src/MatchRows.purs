@@ -1,20 +1,28 @@
-module MatchRows (matchRows, selectForInsert, insertNewVals) where
+module MatchRows ( matchRows
+                 , selectForInsert
+                 , insertNewVals
+                 , insertForeignKeyMapping
+                 , selectForeignKeyMapping
+                 , insertForeignKeyValues
+                 , MatchedRow
+                 ) where
 
 import Prelude
 
-import Data.Array (intercalate, mapWithIndex, nub, uncons)
+import Data.Array (intercalate, mapWithIndex, nub, nubBy, uncons)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import Data.Unfoldable (fromMaybe)
-import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, insertFrom, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, (..))
+import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, stringLiteral, (..))
 import UploadPlan (ColumnType(..), MappingItem, UploadTable)
 
-
+type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
 
 matchRows_ :: Int -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
 matchRows_ wbId mappingItems matchTable whereExpr idCol =
-  query [SelectAs "recordid" $ t .. idCol, SelectTerm $ wb .. "rownumber"] (matchTable `as` t) joinWB (whereExpr t)
+  query [SelectAs "rowid" $ wb .. "workbenchrowid", SelectAs "recordid" $ t .. idCol, SelectTerm $ wb .. "rownumber"]
+  (matchTable `as` t) joinWB (whereExpr t)
   where
     (t :: Alias) = wrap "t"
     (wb :: Alias) = wrap "wb"
@@ -32,7 +40,7 @@ matchRows ut = matchRows_ ut.workbenchId ut.mappingItems (Table ut.tableName) wh
 rowsFromWB :: Int -> Array MappingItem -> Relation
 rowsFromWB wbId mappingItems =
   query
-  (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "rownumber"])
+  (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "workbenchrowid", SelectTerm $ r .. "rownumber"])
   (Table "workbenchrow" `as` r)
   (mapWithIndex makeJoinWB mappingItems)
   (Just $ (r .. "workbenchid") `equal` (wrap $ show wbId))
@@ -64,28 +72,19 @@ makeSelectWB i item = SelectAs item.columnName (parseValue item.columnType value
   where value = (wrap $ "c" <> (show i)) .. "celldata"
 
 
-selectNewVals :: Int -> Array MappingItem -> Array ToOne -> Array Int -> Relation
-selectNewVals wbId mappingItems toOnes matched =
+selectNewVals :: Int -> Array MappingItem -> Array Int -> Relation
+selectNewVals wbId mappingItems matched =
   queryDistinct
-  (mapWithIndex makeSelectWB mappingItems <> mapWithIndex (selectForeignKey r) toOnes)
+  (mapWithIndex makeSelectWB mappingItems)
   (Table "workbenchrow" `as` r)
-  (mapWithIndex makeJoinWB mappingItems <> mapWithIndex (joinForeignKeyLookup r) toOnes)
+  (mapWithIndex makeJoinWB mappingItems)
   (Just $ foldl1 and ((r .. "workbenchid") `equal` (wrap $ show wbId) :| excludeMatched r matched))
   where (r :: Alias) = wrap "r"
 
-selectForeignKey :: Alias -> Int -> ToOne -> SelectTerm
-selectForeignKey wbRow i toOne = SelectAs toOne.foreignKey (mr .. "recordid")
-  where mr = Alias $ "toOne" <> show i
-
-joinForeignKeyLookup :: Alias -> Int -> ToOne -> JoinExpr
-joinForeignKeyLookup wbRow i toOne = join toOne.matchedRows mr $ Just $
-                                     (wbRow .. "rownumber") `equal` (mr .. "rownumber")
-  where mr = Alias $ "toOne" <> show i
-
-selectForInsert :: Int -> Array MappingItem -> Array ToOne -> Array ExtraValue -> Array Int -> Relation
-selectForInsert wbId mappingItems toOnes extraFields matched =
+selectForInsert :: Int -> Array MappingItem -> Array ExtraValue -> Array Int -> Relation
+selectForInsert wbId mappingItems extraFields matched =
   query ([star] <> extraFields_)
-  (selectNewVals wbId mappingItems toOnes matched `as` newValues)
+  (selectNewVals wbId mappingItems matched `as` newValues)
   []
   Nothing
   where (newValues :: Alias) = wrap "newvalues"
@@ -96,13 +95,33 @@ excludeMatched row matched = fromMaybe $ (row .. "rownumber") `notIn` rowList
   where rowList = map (show >>> wrap) $ nub matched
 
 type ExtraValue = {columnName :: String, value :: String}
-type ToOne = {foreignKey :: String, matchedRows :: Relation}
 
-insertNewVals_ :: String -> Int -> Array MappingItem -> Array ToOne -> Array ExtraValue -> Array Int -> String
-insertNewVals_ table wbId mappingItems toOnes extraFields matched =
-  insertFrom (selectForInsert wbId mappingItems toOnes extraFields matched) columns table
-  where columns = map _.columnName mappingItems <> map _.foreignKey toOnes <> map _.columnName extraFields
+insertNewVals_ :: String -> Int -> Array MappingItem -> Array ExtraValue -> Array Int -> String
+insertNewVals_ table wbId mappingItems extraFields matched =
+  insertFrom (selectForInsert wbId mappingItems extraFields matched) columns table
+  where columns = map _.columnName mappingItems <> map _.columnName extraFields
 
-insertNewVals :: UploadTable -> Array ToOne -> Array Int -> String
-insertNewVals ut toOnes matchedRows =
-  insertNewVals_ ut.tableName ut.workbenchId ut.mappingItems toOnes ut.staticValues matchedRows
+insertNewVals :: UploadTable -> Array Int -> String
+insertNewVals ut matchedRows =
+  insertNewVals_ ut.tableName ut.workbenchId ut.mappingItems ut.staticValues matchedRows
+
+
+insertForeignKeyMapping :: Int -> String -> String -> String
+insertForeignKeyMapping wbTemplateId tableName columnName =
+  insertValues [[wrap "now()", stringLiteral columnName, stringLiteral tableName, intLiteral wbTemplateId]]
+  ["timestampcreated", "fieldname", "tablename", "workbenchtemplateid"] "workbenchtemplatemappingitem"
+
+
+selectForeignKeyMapping :: Int -> String -> String -> Relation
+selectForeignKeyMapping wbTemplateId tableName columnName =
+  query [SelectAs "id" $ i .. "workbenchtemplatemappingitemid"] (from $ Table "workbenchtemplatemappingitem") [] (Just whereClause)
+  where
+    i = Alias "workbenchtemplatemappingitem"
+    whereClause = ((i .. "fieldname") `equal` stringLiteral columnName) `and` ((i .. "tablename") `equal` stringLiteral tableName)
+
+
+insertForeignKeyValues :: Int -> Array MatchedRow -> String
+insertForeignKeyValues wbTemplateItemId fks =
+  insertValues (map rowValues onePerRow) ["workbenchtemplatemappingitemid", "rownumber", "workbenchrowid", "celldata"] "workbenchdataitem"
+  where onePerRow = nubBy (\{rowid:a} {rowid:b} -> compare a b) fks
+        rowValues fk = [intLiteral wbTemplateItemId, intLiteral fk.rownumber, intLiteral fk.rowid, stringLiteral $ show fk.recordid]
