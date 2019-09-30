@@ -15,12 +15,12 @@ import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import Data.Unfoldable (fromMaybe)
 import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, stringLiteral, (..))
-import UploadPlan (ColumnType(..), MappingItem, UploadTable)
+import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), UploadPlan, UploadTable, WorkbenchId(..))
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
 
-matchRows_ :: Int -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
-matchRows_ wbId mappingItems matchTable whereExpr idCol =
+matchRows_ :: WorkbenchId -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
+matchRows_ (WorkbenchId wbId) mappingItems matchTable whereExpr idCol =
   query [SelectAs "rowid" $ wb .. "workbenchrowid", SelectAs "recordid" $ t .. idCol, SelectTerm $ wb .. "rownumber"]
   (matchTable `as` t) joinWB (whereExpr t)
   where
@@ -30,12 +30,12 @@ matchRows_ wbId mappingItems matchTable whereExpr idCol =
       Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
 
-matchRows :: UploadTable -> Relation
-matchRows ut = matchRows_ ut.workbenchId ut.mappingItems (Table ut.tableName) whereClause ut.idColumn
+matchRows :: UploadPlan -> Relation
+matchRows up = matchRows_ up.workbenchId up.uploadTable.mappingItems (Table up.uploadTable.tableName) whereClause up.uploadTable.idColumn
   where whereClause =
           \t -> map (\{head, tail} -> foldl1 and (head :| tail)) $
                 uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
-                ut.filters
+                up.uploadTable.filters
 
 rowsFromWB :: Int -> Array MappingItem -> Relation
 rowsFromWB wbId mappingItems =
@@ -72,8 +72,8 @@ makeSelectWB i item = SelectAs item.columnName (parseValue item.columnType value
   where value = (wrap $ "c" <> (show i)) .. "celldata"
 
 
-selectNewVals :: Int -> Array MappingItem -> Array Int -> Relation
-selectNewVals wbId mappingItems matched =
+selectNewVals :: WorkbenchId -> Array MappingItem -> Array Int -> Relation
+selectNewVals (WorkbenchId wbId) mappingItems matched =
   queryDistinct
   (mapWithIndex makeSelectWB mappingItems)
   (Table "workbenchrow" `as` r)
@@ -81,7 +81,7 @@ selectNewVals wbId mappingItems matched =
   (Just $ foldl1 and ((r .. "workbenchid") `equal` (wrap $ show wbId) :| excludeMatched r matched))
   where (r :: Alias) = wrap "r"
 
-selectForInsert :: Int -> Array MappingItem -> Array ExtraValue -> Array Int -> Relation
+selectForInsert :: WorkbenchId -> Array MappingItem -> Array ExtraValue -> Array Int -> Relation
 selectForInsert wbId mappingItems extraFields matched =
   query ([star] <> extraFields_)
   (selectNewVals wbId mappingItems matched `as` newValues)
@@ -96,23 +96,24 @@ excludeMatched row matched = fromMaybe $ (row .. "rownumber") `notIn` rowList
 
 type ExtraValue = {columnName :: String, value :: String}
 
-insertNewVals_ :: String -> Int -> Array MappingItem -> Array ExtraValue -> Array Int -> String
+insertNewVals_ :: String -> WorkbenchId -> Array MappingItem -> Array ExtraValue -> Array Int -> String
 insertNewVals_ table wbId mappingItems extraFields matched =
   insertFrom (selectForInsert wbId mappingItems extraFields matched) columns table
   where columns = map _.columnName mappingItems <> map _.columnName extraFields
 
-insertNewVals :: UploadTable -> Array Int -> String
-insertNewVals ut matchedRows =
-  insertNewVals_ ut.tableName ut.workbenchId ut.mappingItems ut.staticValues matchedRows
+insertNewVals :: UploadPlan -> Array Int -> String
+insertNewVals up matchedRows =
+  insertNewVals_ ut.tableName up.workbenchId ut.mappingItems ut.staticValues matchedRows
+  where ut = up.uploadTable
 
 
-insertForeignKeyMapping :: Int -> String -> String -> String
-insertForeignKeyMapping wbTemplateId tableName columnName =
+insertForeignKeyMapping :: TemplateId -> String -> String -> String
+insertForeignKeyMapping (TemplateId wbTemplateId) tableName columnName =
   insertValues [[wrap "now()", stringLiteral columnName, stringLiteral tableName, intLiteral wbTemplateId]]
   ["timestampcreated", "fieldname", "tablename", "workbenchtemplateid"] "workbenchtemplatemappingitem"
 
 
-selectForeignKeyMapping :: Int -> String -> String -> Relation
+selectForeignKeyMapping :: TemplateId -> String -> String -> Relation
 selectForeignKeyMapping wbTemplateId tableName columnName =
   query [SelectAs "id" $ i .. "workbenchtemplatemappingitemid"] (from $ Table "workbenchtemplatemappingitem") [] (Just whereClause)
   where
