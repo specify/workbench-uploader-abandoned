@@ -17,12 +17,14 @@ type UploadPlan =
   , uploadTable :: UploadTable
   }
 
+type NamedValue = { columnName :: String, value :: String }
+
 type UploadTable =
   { tableName :: String
   , idColumn :: String
-  , filters :: Array { columnName :: String, value :: String }
+  , filters :: Array NamedValue
   , mappingItems :: Array MappingItem
-  , staticValues :: Array { columnName :: String, value :: String }
+  , staticValues :: Array NamedValue
   , toOneTables :: Array ToOne
   , toManyTables :: Array ToMany
   }
@@ -32,8 +34,8 @@ type ToMany = { foreignKey :: String, tableName :: String, records :: Array ToMa
 newtype ToOne = ToOne { foreignKey :: String, table :: UploadTable }
 
 type ToManyRecord =
-  { filters :: Array { columnName :: String, value :: String }
-  , staticValues :: Array { columnName :: String, value :: String }
+  { filters :: Array NamedValue
+  , staticValues :: Array NamedValue
   , toOneTables :: Array ToOne
   , mappingItems :: Array MappingItem
   }
