@@ -122,3 +122,5 @@ stringLiteral s = wrap $ "'" <> s <> "'"
 intLiteral :: Int -> ScalarExpr
 intLiteral n = wrap $ show n
 
+strToDate :: ScalarExpr -> ScalarExpr -> ScalarExpr
+strToDate str format = wrap $ "str_to_date(" <> unwrap str <> ", " <> unwrap format <> ")"

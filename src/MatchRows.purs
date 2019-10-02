@@ -4,6 +4,8 @@ module MatchRows ( matchRows
                  , insertForeignKeyMapping
                  , selectForeignKeyMapping
                  , insertForeignKeyValues
+                 , deleteColumn
+                 , deleteMapping
                  , MatchedRow
                  ) where
 
@@ -14,7 +16,7 @@ import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import Data.Unfoldable (fromMaybe)
-import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, stringLiteral, (..))
+import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, strToDate, stringLiteral, (..))
 import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), UploadPlan, UploadTable, WorkbenchId(..))
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
@@ -65,7 +67,7 @@ parseValue StringType value = value
 parseValue DoubleType value = nullIf value (wrap "''") `plus` (wrap "0.0")
 parseValue IntType value = nullIf value (wrap "''") `plus` (wrap "0")
 parseValue DecimalType value = nullIf value (wrap "''")
-parseValue DateType value = nullIf value (wrap "''")
+parseValue (DateType format) value = strToDate value $ stringLiteral format
 
 makeSelectWB :: Int -> MappingItem -> SelectTerm
 makeSelectWB i item = SelectAs item.columnName (parseValue item.columnType value)
@@ -126,3 +128,9 @@ insertForeignKeyValues wbTemplateItemId fks =
   insertValues (map rowValues onePerRow) ["workbenchtemplatemappingitemid", "rownumber", "workbenchrowid", "celldata"] "workbenchdataitem"
   where onePerRow = nubBy (\{rowid:a} {rowid:b} -> compare a b) fks
         rowValues fk = [intLiteral wbTemplateItemId, intLiteral fk.rownumber, intLiteral fk.rowid, stringLiteral $ show fk.recordid]
+
+deleteColumn :: MappingItem -> String
+deleteColumn mi = "delete from workbenchdataitem where workbenchtemplatemappingitemid = " <> (show mi.id)
+
+deleteMapping :: MappingItem -> String
+deleteMapping mi = "delete from workbenchtemplatemappingitem where workbenchtemplatemappingitemid = " <> (show mi.id)
