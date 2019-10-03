@@ -22,12 +22,16 @@ type NamedValue = { columnName :: String, value :: String }
 type UploadTable =
   { tableName :: String
   , idColumn :: String
-  , filters :: Array NamedValue
+  , strategy :: UploadStrategy
   , mappingItems :: Array MappingItem
   , staticValues :: Array NamedValue
   , toOneTables :: Array ToOne
   , toManyTables :: Array ToMany
   }
+
+data UploadStrategy = AlwaysCreate
+                    | AlwaysMatch (Array NamedValue)
+                    | MatchOrCreate (Array NamedValue)
 
 type ToMany = { foreignKey :: String, tableName :: String, records :: Array ToManyRecord }
 

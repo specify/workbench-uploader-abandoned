@@ -11,14 +11,14 @@ import Effect (Effect)
 import Effect.Aff (Aff, Error, error, launchAff_, throwError)
 import Effect.Class (liftEffect)
 import Effect.Console (log, logShow)
+import ExamplePlan (uploadPlan)
 import Foreign (Foreign)
 import MatchRows (MatchedRow, deleteColumn, deleteMapping, insertForeignKeyMapping, insertForeignKeyValues, insertNewVals, matchRows, selectForInsert, selectForeignKeyMapping)
 import MySQL.Connection (Connection, closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
 import MySQL.Transaction as T
 import SQL (Relation)
 import Simple.JSON (class ReadForeign, class WriteForeign, write, writeJSON)
-import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), ToManyRecord, ToOne(..), UploadPlan, UploadTable, WorkbenchId(..), ToMany)
-import ExamplePlan (uploadPlan)
+import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), ToMany, ToManyRecord, ToOne(..), UploadPlan, UploadStrategy(..), UploadTable, WorkbenchId(..), NamedValue)
 
 query' :: forall a. ReadForeign a => Connection -> String -> Aff (Array a)
 query' conn q = do
@@ -63,9 +63,10 @@ doUploadTable conn up = do
 
   let up' = up {uploadTable = up.uploadTable {mappingItems = up.uploadTable.mappingItems <> toOnes}}
 
-  liftEffect $ log (show $ matchRows up')
-  matchedRows :: Array MatchedRow <- query' conn (show $ matchRows up')
-  logJSON {matchedRows: length matchedRows}
+  matchedRows <- case up.uploadTable.strategy of
+        AlwaysCreate -> pure []
+        (AlwaysMatch filters) -> findExistingRecords conn up' filters
+        (MatchOrCreate filters) -> findExistingRecords conn up' filters
 
   logJSON {insertingRecords: up'.uploadTable.tableName}
   let insert = insertNewVals up' $ map (_.rownumber) matchedRows
@@ -75,8 +76,14 @@ doUploadTable conn up = do
     execute' conn (deleteColumn mi)
     execute' conn (deleteMapping mi)
 
-  query' conn (show $ matchRows up')
+  findExistingRecords conn up' []
 
+findExistingRecords :: Connection -> UploadPlan -> Array NamedValue -> Aff (Array MatchedRow)
+findExistingRecords conn up filters = do
+  liftEffect $ log (show $ matchRows up filters)
+  matchedRows :: Array MatchedRow <- query' conn (show $ matchRows up filters)
+  logJSON {matchedRows: length matchedRows}
+  pure matchedRows
 
 doToManyToOnes :: Connection -> UploadPlan -> ToMany -> Aff (Array (Array MappingItem))
 doToManyToOnes conn parentUploadPlan {foreignKey, tableName, records} = do

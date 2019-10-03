@@ -2,7 +2,7 @@ module ExamplePlan where
 
 import Prelude
 
-import UploadPlan (ColumnType(..), TemplateId(..), ToManyRecord, ToOne(..), UploadPlan, WorkbenchId(..))
+import UploadPlan (ColumnType(..), TemplateId(..), ToManyRecord, ToOne(..), UploadPlan, UploadStrategy(..), WorkbenchId(..))
 
 uploadPlan :: UploadPlan
 uploadPlan =
@@ -11,7 +11,7 @@ uploadPlan =
   , uploadTable:
     { tableName: "collectingevent"
     , idColumn: "collectingeventid"
-    , filters: [{columnName: "disciplineid", value: "32768"}]
+    , strategy: AlwaysCreate
     , mappingItems:
       [ {columnName: "remarks", id: 1349, columnType: StringType}
       -- , {columnName: "endDate", id: 1352, columnType: DateType "%d %b %Y"}
@@ -29,7 +29,7 @@ uploadPlan =
         { foreignKey: "localityid"
         , table: { tableName: "locality"
                  , idColumn: "localityid"
-                 , filters: [{columnName: "disciplineid", value: "32768"}]
+                 , strategy: MatchOrCreate [{columnName: "disciplineid", value: "32768"}]
                  , mappingItems:
                    [ {columnName: "text1", id: 1359, columnType: StringType}
                    , {columnName: "lat1text", id: 1340, columnType: StringType}
@@ -75,7 +75,7 @@ collectorRecord ordernumber id =
       { foreignKey: "agentid"
       , table: { tableName: "agent"
                , idColumn: "agentid"
-               , filters: [{columnName: "divisionid", value: "2"}]
+               , strategy: MatchOrCreate [{columnName: "divisionid", value: "2"}]
                , mappingItems: [ {columnName: "lastname", id: id, columnType: StringType} ]
                , staticValues:
                  [ {columnName: "divisionid", value: "2"}

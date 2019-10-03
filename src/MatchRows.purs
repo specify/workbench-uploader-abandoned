@@ -17,7 +17,7 @@ import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import Data.Unfoldable (fromMaybe)
 import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, strToDate, stringLiteral, (..))
-import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), UploadPlan, UploadTable, WorkbenchId(..))
+import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), UploadPlan, UploadTable, WorkbenchId(..), NamedValue)
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
 
@@ -32,12 +32,13 @@ matchRows_ (WorkbenchId wbId) mappingItems matchTable whereExpr idCol =
       Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
 
-matchRows :: UploadPlan -> Relation
-matchRows up = matchRows_ up.workbenchId up.uploadTable.mappingItems (Table up.uploadTable.tableName) whereClause up.uploadTable.idColumn
+matchRows :: UploadPlan -> Array NamedValue -> Relation
+matchRows up filters =
+  matchRows_ up.workbenchId up.uploadTable.mappingItems (Table up.uploadTable.tableName) whereClause up.uploadTable.idColumn
   where whereClause =
           \t -> map (\{head, tail} -> foldl1 and (head :| tail)) $
                 uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
-                up.uploadTable.filters
+                filters
 
 rowsFromWB :: Int -> Array MappingItem -> Relation
 rowsFromWB wbId mappingItems =
