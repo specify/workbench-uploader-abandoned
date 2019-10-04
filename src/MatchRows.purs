@@ -13,18 +13,20 @@ where
 
 import Prelude
 
-import Data.Array (intercalate, mapWithIndex, nub, nubBy, uncons)
+import Data.Array (fromFoldable, intercalate, mapWithIndex, nub, nubBy, uncons)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import Data.Traversable (for)
 import Data.Unfoldable (fromMaybe)
-import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, varExpr, (..))
-import UploadPlan (ColumnType(..), MappingItem, NamedValue, TemplateId(..), ToOne(..), UploadPlan, WorkbenchId(..), UploadTable)
+import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, notInSubQuery, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, varExpr, (..))
+import UploadPlan (ColumnType(..), MappingItem, NamedValue, TemplateId(..), ToOne(..), UploadPlan, UploadStrategy(..), UploadTable, WorkbenchId(..))
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
 
-
+remark :: String -> String
+remark message =
+  "select '" <> message <> "' as message"
 
 script :: UploadPlan -> Array String
 script up@{templateId: (TemplateId templateId), workbenchId: (WorkbenchId workbenchId)} =
@@ -39,36 +41,99 @@ script up@{templateId: (TemplateId templateId), workbenchId: (WorkbenchId workbe
 
 handleToOnes :: UploadTable -> Array String
 handleToOnes ut = do
-  (ToOne {foreignKey, table}) <- ut.toOneTables
-  let whereClause t = map (\{head, tail} -> foldl1 and (head :| tail)) $
-                      uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
-                      []
-  let select = query [star, SelectTerm $ varExpr $ toOneIdColumnVar ut.tableName foreignKey]
-        (selectExisting table.mappingItems (Table table.tableName) table.idColumn whereClause `as` Alias "foo") [] Nothing
-  ( handleToOnes table
-    <> handleToManys table
-    <> [ "-- find existing " <> table.tableName <> " records"
-       , insertFrom select ["workbenchrowid", "celldata", "rownumber", "workbenchtemplatemappingitemid"] "workbenchdataitem"
-       ]
-    )
+  toOne <- ut.toOneTables
+  handleToOne ut toOne
 
-selectExisting :: Array MappingItem -> Relation -> String -> (Alias -> Maybe ScalarExpr) -> Relation
-selectExisting mappingItems matchTable idCol whereExpr =
-  query [SelectAs "rowid" $ wb .. "workbenchrowid", SelectAs "id" $ t .. idCol, SelectTerm $ wb .. "rownumber"]
-  (matchTable `as` t) joinWB (whereExpr t)
+
+handleToOne :: UploadTable -> ToOne -> Array String
+handleToOne ut (ToOne {foreignKey, table}) =
+  handleToOnes table
+  <> handleToManys table
+  <> [ remark $ "find existing " <> table.tableName <> " records"
+     , findExistingRecords ut foreignKey table
+
+     , remark $ "insert new " <> table.tableName <> " records"
+     , insertNewRecords ut foreignKey table
+
+     , remark $ "find newly created " <> table.tableName <> " records"
+     , findExistingRecords ut foreignKey table
+     ]
+
+insertNewRecords :: UploadTable -> String -> UploadTable -> String
+insertNewRecords ut foreignKey table =
+  insertFrom
+  ( query
+    ([star] <> constantVals)
+    (flip as (Alias "newvalues") $ queryDistinct
+     (mapWithIndex makeSelectWB table.mappingItems)
+     (Table "workbenchrow" `as` r)
+     (mapWithIndex makeJoinWB table.mappingItems)
+     (foldl' and $ [(r .. "workbenchid") `equal` varExpr "workbenchid", excludeMatched])
+    )
+    []
+    Nothing
+  )
+  columns
+  table.tableName
   where
-    (t :: Alias) = wrap "t"
-    (wb :: Alias) = wrap "wb"
-    joinWB = case uncons $ map compValues mappingItems of
-      Just { head: c, tail: cs } ->  [join (rowsFromWB (wrap $ "@workbenchid") mappingItems) wb $ Just (foldl1 and (c :| cs))]
-      Nothing -> []
+    r = Alias "r"
+    constantVals = (\{columnName, value} -> SelectAs columnName $ wrap value) `map` table.staticValues
+    columns = map _.columnName table.mappingItems <> map _.columnName table.staticValues
+    excludeMatched = (r .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor $ varExpr $ toOneIdColumnVar ut.tableName foreignKey)
+
+rowsWithValuesFor :: ScalarExpr -> Relation
+rowsWithValuesFor workbenchtemplatemappingitemid =
+  query [SelectTerm $ r .. "workbenchrowid"] (Table "workbenchrow" `as` r)
+  [join (Table "workbenchdataitem") d Nothing]
+  (Just $
+   ((d .. "workbenchrowid") `equal` (r .. "workbenchrowid")) `and`
+   ((d .. "workbenchtemplatemappingitemid") `equal` workbenchtemplatemappingitemid)
+  )
+  where
+    r = Alias "r"
+    d = Alias "d"
+
+
+findExistingRecords :: UploadTable -> String -> UploadTable -> String
+findExistingRecords ut foreignKey table =
+  insertFrom
+  ( query
+    [ SelectAs "rowid" $ wb .. "workbenchrowid"
+    , SelectAs "id" $ t .. table.idColumn
+    , SelectTerm $ wb .. "rownumber"
+    , SelectTerm $ wbTemplateMappingItemId
+    ]
+    (Table table.tableName `as` t)
+    [join (rowsFromWB (varExpr "workbenchid") table.mappingItems) wb (foldl' and $ map compValues table.mappingItems)]
+    (foldl' and $
+     [ (wb .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor wbTemplateMappingItemId) ]
+     <> (strategyToWhereClause table.strategy t # fromFoldable)
+    )
+  )
+  ["workbenchrowid", "celldata", "rownumber", "workbenchtemplatemappingitemid"]
+  "workbenchdataitem"
+  where
+    t = Alias "t"
+    wb = Alias "wb"
+    wbTemplateMappingItemId = varExpr $ toOneIdColumnVar ut.tableName foreignKey
+
+strategyToWhereClause :: UploadStrategy -> Alias -> Maybe ScalarExpr
+strategyToWhereClause strategy t = case strategy of
+  AlwaysCreate -> Nothing
+  AlwaysMatch values -> matchAll values
+  MatchOrCreate values -> matchAll values
+  where
+    matchAll values = foldl' and $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value) values
+
+foldl' :: forall a. (a -> a -> a) -> Array a -> Maybe a
+foldl' f as = map (\{ head, tail } -> foldl1 f (head :| tail)) $ uncons as
 
 handleToManys :: UploadTable -> Array String
 handleToManys ut = []
 
 insertIdFields :: UploadTable -> Array String
 insertIdFields ut =
-  [ "-- insert an id field for the base table"
+  [ remark "insert an id field for the base table"
   , insertValues [[wrap $ "now()", wrap $ "@templateid", stringLiteral ut.idColumn, stringLiteral ut.tableName]]
     ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
   , setUserVar ut.idColumn (wrap "last_insert_id()")
@@ -80,7 +145,7 @@ insertIdFields ut =
 insertIdFieldsFromToOnes :: UploadTable -> Array String
 insertIdFieldsFromToOnes ut = do
   (ToOne {foreignKey, table}) <- ut.toOneTables
-  ([ "-- insert an id field for the " <> ut.tableName <> " to " <> table.tableName <> " foreign key"
+  ([ remark $ "insert an id field for the " <> ut.tableName <> " to " <> table.tableName <> " foreign key"
    , insertValues
      [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral ut.tableName]]
      ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
@@ -98,7 +163,7 @@ insertIdFieldsFromToManys ut = do
   {foreignKey, tableName, records} <- ut.toManyTables
   {index, record: {toOneTables}} <- mapWithIndex (\i r ->  {index: i, record: r}) records
   (ToOne {foreignKey, table}) <- toOneTables
-  ([ "-- insert an id field for the " <> tableName <> show index <> " to " <> table.tableName <> " foreign key"
+  ([ remark $ "insert an id field for the " <> tableName <> show index <> " to " <> table.tableName <> " foreign key"
    , insertValues
      [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral tableName]]
      ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"

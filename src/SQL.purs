@@ -106,6 +106,9 @@ notIn :: ScalarExpr -> Array ScalarExpr -> Maybe ScalarExpr
 notIn value [] = Nothing
 notIn value values = Just $ wrap $ unwrap value <> " not in (" <> intercalate ", " (map unwrap values) <> ")"
 
+notInSubQuery :: ScalarExpr -> Relation -> ScalarExpr
+notInSubQuery value relation = wrap $ unwrap value <> " not in (" <> show relation <> ")"
+
 insertFrom :: Relation -> Array String -> String -> String
 insertFrom select columns table = "insert into " <> table <> "(\n" <> (intercalate ",\n" columns) <> "\n) " <> show select
 
