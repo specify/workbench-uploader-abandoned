@@ -1,13 +1,15 @@
-module MatchRows ( matchRows
-                 , selectForInsert
-                 , insertNewVals
-                 , insertForeignKeyMapping
-                 , selectForeignKeyMapping
-                 , insertForeignKeyValues
-                 , deleteColumn
-                 , deleteMapping
-                 , MatchedRow
-                 ) where
+module MatchRows -- ( matchRows
+                 -- , selectForInsert
+                 -- , insertNewVals
+                 -- , insertForeignKeyMapping
+                 -- , selectForeignKeyMapping
+                 -- , insertForeignKeyValues
+                 -- , deleteColumn
+                 -- , deleteMapping
+                 -- , MatchedRow
+                 -- , script
+                 -- ) where
+where
 
 import Prelude
 
@@ -15,38 +17,126 @@ import Data.Array (intercalate, mapWithIndex, nub, nubBy, uncons)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
+import Data.Traversable (for)
 import Data.Unfoldable (fromMaybe)
-import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, star, strToDate, stringLiteral, (..))
-import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), UploadPlan, UploadTable, WorkbenchId(..), NamedValue)
+import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, varExpr, (..))
+import UploadPlan (ColumnType(..), MappingItem, NamedValue, TemplateId(..), ToOne(..), UploadPlan, WorkbenchId(..), UploadTable)
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
 
-matchRows_ :: WorkbenchId -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
-matchRows_ (WorkbenchId wbId) mappingItems matchTable whereExpr idCol =
-  query [SelectAs "rowid" $ wb .. "workbenchrowid", SelectAs "recordid" $ t .. idCol, SelectTerm $ wb .. "rownumber"]
+
+
+script :: UploadPlan -> Array String
+script up@{templateId: (TemplateId templateId), workbenchId: (WorkbenchId workbenchId)} =
+  [ "start transaction"
+  , "set @templateid = " <> show templateId
+  , "set @workbenchid = " <> show workbenchId
+  ] <>
+  insertIdFields up.uploadTable <>
+  handleToOnes up.uploadTable <>
+  handleToManys up.uploadTable <>
+  [ "rollback" ]
+
+handleToOnes :: UploadTable -> Array String
+handleToOnes ut = do
+  (ToOne {foreignKey, table}) <- ut.toOneTables
+  let whereClause t = map (\{head, tail} -> foldl1 and (head :| tail)) $
+                      uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
+                      []
+  let select = query [star, SelectTerm $ varExpr $ toOneIdColumnVar ut.tableName foreignKey]
+        (selectExisting table.mappingItems (Table table.tableName) table.idColumn whereClause `as` Alias "foo") [] Nothing
+  ( handleToOnes table
+    <> handleToManys table
+    <> [ "-- find existing " <> table.tableName <> " records"
+       , insertFrom select ["workbenchrowid", "celldata", "rownumber", "workbenchtemplatemappingitemid"] "workbenchdataitem"
+       ]
+    )
+
+selectExisting :: Array MappingItem -> Relation -> String -> (Alias -> Maybe ScalarExpr) -> Relation
+selectExisting mappingItems matchTable idCol whereExpr =
+  query [SelectAs "rowid" $ wb .. "workbenchrowid", SelectAs "id" $ t .. idCol, SelectTerm $ wb .. "rownumber"]
   (matchTable `as` t) joinWB (whereExpr t)
   where
     (t :: Alias) = wrap "t"
     (wb :: Alias) = wrap "wb"
     joinWB = case uncons $ map compValues mappingItems of
-      Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
+      Just { head: c, tail: cs } ->  [join (rowsFromWB (wrap $ "@workbenchid") mappingItems) wb $ Just (foldl1 and (c :| cs))]
       Nothing -> []
 
-matchRows :: UploadPlan -> Array NamedValue -> Relation
-matchRows up filters =
-  matchRows_ up.workbenchId up.uploadTable.mappingItems (Table up.uploadTable.tableName) whereClause up.uploadTable.idColumn
-  where whereClause =
-          \t -> map (\{head, tail} -> foldl1 and (head :| tail)) $
-                uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
-                filters
+handleToManys :: UploadTable -> Array String
+handleToManys ut = []
 
-rowsFromWB :: Int -> Array MappingItem -> Relation
+insertIdFields :: UploadTable -> Array String
+insertIdFields ut =
+  [ "-- insert an id field for the base table"
+  , insertValues [[wrap $ "now()", wrap $ "@templateid", stringLiteral ut.idColumn, stringLiteral ut.tableName]]
+    ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
+  , setUserVar ut.idColumn (wrap "last_insert_id()")
+  ] <>
+  insertIdFieldsFromToOnes ut <>
+  insertIdFieldsFromToManys ut
+
+
+insertIdFieldsFromToOnes :: UploadTable -> Array String
+insertIdFieldsFromToOnes ut = do
+  (ToOne {foreignKey, table}) <- ut.toOneTables
+  ([ "-- insert an id field for the " <> ut.tableName <> " to " <> table.tableName <> " foreign key"
+   , insertValues
+     [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral ut.tableName]]
+     ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
+   , setUserVar (toOneIdColumnVar ut.tableName foreignKey) (wrap "last_insert_id()")
+   ] <>
+   insertIdFieldsFromToOnes table <>
+   insertIdFieldsFromToManys table
+  )
+
+toOneIdColumnVar :: String -> String -> String
+toOneIdColumnVar tableName foreignKey = tableName <> "_" <> foreignKey
+
+insertIdFieldsFromToManys :: UploadTable -> Array String
+insertIdFieldsFromToManys ut = do
+  {foreignKey, tableName, records} <- ut.toManyTables
+  {index, record: {toOneTables}} <- mapWithIndex (\i r ->  {index: i, record: r}) records
+  (ToOne {foreignKey, table}) <- toOneTables
+  ([ "-- insert an id field for the " <> tableName <> show index <> " to " <> table.tableName <> " foreign key"
+   , insertValues
+     [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral tableName]]
+     ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
+   , setUserVar (toManyIdColumnVar tableName index foreignKey) (wrap "last_insert_id()")
+   ] <>
+   insertIdFieldsFromToOnes table <>
+   insertIdFieldsFromToManys table
+  )
+
+toManyIdColumnVar :: String -> Int -> String -> String
+toManyIdColumnVar tableName index foreignKey = tableName <> show index <> "_" <> foreignKey
+
+-- matchRows_ :: WorkbenchId -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
+-- matchRows_ (WorkbenchId wbId) mappingItems matchTable whereExpr idCol =
+--   query [SelectAs "rowid" $ wb .. "workbenchrowid", SelectAs "recordid" $ t .. idCol, SelectTerm $ wb .. "rownumber"]
+--   (matchTable `as` t) joinWB (whereExpr t)
+--   where
+--     (t :: Alias) = wrap "t"
+--     (wb :: Alias) = wrap "wb"
+--     joinWB = case uncons $ map compValues mappingItems of
+--       Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
+--       Nothing -> []
+
+-- matchRows :: UploadPlan -> Array NamedValue -> Relation
+-- matchRows up filters =
+--   matchRows_ up.workbenchId up.uploadTable.mappingItems (Table up.uploadTable.tableName) whereClause up.uploadTable.idColumn
+--   where whereClause =
+--           \t -> map (\{head, tail} -> foldl1 and (head :| tail)) $
+--                 uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
+--                 filters
+
+rowsFromWB :: ScalarExpr -> Array MappingItem -> Relation
 rowsFromWB wbId mappingItems =
   query
   (mapWithIndex makeSelectWB mappingItems <> [SelectTerm $ r .. "workbenchrowid", SelectTerm $ r .. "rownumber"])
   (Table "workbenchrow" `as` r)
   (mapWithIndex makeJoinWB mappingItems)
-  (Just $ (r .. "workbenchid") `equal` (wrap $ show wbId))
+  (Just $ (r .. "workbenchid") `equal` wbId)
   where (r :: Alias) = wrap "r"
 
 compValues :: MappingItem -> ScalarExpr

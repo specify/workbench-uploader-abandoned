@@ -124,3 +124,9 @@ intLiteral n = wrap $ show n
 
 strToDate :: ScalarExpr -> ScalarExpr -> ScalarExpr
 strToDate str format = wrap $ "str_to_date(" <> unwrap str <> ", " <> unwrap format <> ")"
+
+setUserVar :: String -> ScalarExpr -> String
+setUserVar varName value = "set @" <> varName <> " = " <> unwrap value
+
+varExpr :: String -> ScalarExpr
+varExpr varName = ScalarExpr $ "@" <> varName

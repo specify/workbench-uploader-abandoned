@@ -2,7 +2,7 @@ module Main where
 
 import Prelude
 
-import Data.Array (length)
+import Data.Array (intercalate, length)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.Traversable (for, for_)
@@ -13,7 +13,7 @@ import Effect.Class (liftEffect)
 import Effect.Console (log, logShow)
 import ExamplePlan (uploadPlan)
 import Foreign (Foreign)
-import MatchRows (MatchedRow, deleteColumn, deleteMapping, insertForeignKeyMapping, insertForeignKeyValues, insertNewVals, matchRows, selectForInsert, selectForeignKeyMapping)
+import MatchRows (script)
 import MySQL.Connection (Connection, closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
 import MySQL.Transaction as T
 import SQL (Relation)
@@ -32,81 +32,87 @@ execute' conn s = do
 
 main :: Effect Unit
 main = do
-  conn <- createConnection $ defaultConnectionInfo {database = "bishop", password = "Master", user = "Master"}
-  launchAff_ do
-    T.begin conn
+  let statements = intercalate "\n\n" $ map (flip (<>) ";") $ script uploadPlan
+  log statements
 
-    doIt conn
 
-    T.rollback conn
-    liftEffect $ closeConnection conn
+-- foo = do
+--   conn <- createConnection $ defaultConnectionInfo {database = "bishop", password = "Master", user = "Master"}
+--   launchAff_ do
+--     T.begin conn
 
-doIt :: Connection -> Aff Unit
-doIt conn = do
-  rowsToIds <- doUploadTable conn uploadPlan
-  pure unit
+--     doIt conn
 
-logJSON :: ∀ a. WriteForeign a ⇒ a → Aff Unit
-logJSON value = liftEffect $ log $ writeJSON value
+--     T.rollback conn
+--     liftEffect $ closeConnection conn
 
-doUploadTable :: Connection -> UploadPlan -> Aff (Array MatchedRow)
-doUploadTable conn up = do
-  logJSON {uploadingTable: up.uploadTable.tableName}
+-- doIt :: Connection -> Aff Unit
+-- doIt conn = do
+--   rowsToIds <- doUploadTable conn uploadPlan
+--   pure unit
 
-  toOnes <- for up.uploadTable.toOneTables \(ToOne {foreignKey, table}) -> do
-    let parentTableName = up.uploadTable.tableName
-    let up' = up { uploadTable = table }
-    doUploadToOne conn up' parentTableName foreignKey
+-- logJSON :: ∀ a. WriteForeign a ⇒ a → Aff Unit
+-- logJSON value = liftEffect $ log $ writeJSON value
 
-  -- foo <- for up.uploadTable.toManyTables $ doToManyToOnes conn up
-  -- traceM {name:up.uploadTable.tableName, foo:foo}
+-- doUploadTable :: Connection -> UploadPlan -> Aff (Array MatchedRow)
+-- doUploadTable conn up = do
+--   logJSON {uploadingTable: up.uploadTable.tableName}
 
-  let up' = up {uploadTable = up.uploadTable {mappingItems = up.uploadTable.mappingItems <> toOnes}}
+--   toOnes <- for up.uploadTable.toOneTables \(ToOne {foreignKey, table}) -> do
+--     let parentTableName = up.uploadTable.tableName
+--     let up' = up { uploadTable = table }
+--     doUploadToOne conn up' parentTableName foreignKey
 
-  matchedRows <- case up.uploadTable.strategy of
-        AlwaysCreate -> pure []
-        (AlwaysMatch filters) -> findExistingRecords conn up' filters
-        (MatchOrCreate filters) -> findExistingRecords conn up' filters
+--   -- foo <- for up.uploadTable.toManyTables $ doToManyToOnes conn up
+--   -- traceM {name:up.uploadTable.tableName, foo:foo}
 
-  logJSON {insertingRecords: up'.uploadTable.tableName}
-  let insert = insertNewVals up' $ map (_.rownumber) matchedRows
-  execute' conn insert
+--   let up' = up {uploadTable = up.uploadTable {mappingItems = up.uploadTable.mappingItems <> toOnes}}
 
-  for_ toOnes \mi -> do
-    execute' conn (deleteColumn mi)
-    execute' conn (deleteMapping mi)
+--   matchedRows <- case up.uploadTable.strategy of
+--         AlwaysCreate -> pure []
+--         (AlwaysMatch filters) -> findExistingRecords conn up' filters
+--         (MatchOrCreate filters) -> findExistingRecords conn up' filters
 
-  findExistingRecords conn up' []
+--   logJSON {insertingRecords: up'.uploadTable.tableName}
+--   let insert = insertNewVals up' $ map (_.rownumber) matchedRows
+--   liftEffect $ log insert
+--   execute' conn insert
 
-findExistingRecords :: Connection -> UploadPlan -> Array NamedValue -> Aff (Array MatchedRow)
-findExistingRecords conn up filters = do
-  liftEffect $ log (show $ matchRows up filters)
-  matchedRows :: Array MatchedRow <- query' conn (show $ matchRows up filters)
-  logJSON {matchedRows: length matchedRows}
-  pure matchedRows
+--   for_ toOnes \mi -> do
+--     execute' conn (deleteColumn mi)
+--     execute' conn (deleteMapping mi)
 
-doToManyToOnes :: Connection -> UploadPlan -> ToMany -> Aff (Array (Array MappingItem))
-doToManyToOnes conn parentUploadPlan {foreignKey, tableName, records} = do
-  for records \{toOneTables} -> do
-    for toOneTables \(ToOne {foreignKey, table}) -> do
-      let up = parentUploadPlan { uploadTable = table }
-      doUploadToOne conn up tableName foreignKey
-      -- execute' conn (deleteColumn mi)
-      -- execute' conn (deleteMapping mi)
+--   findExistingRecords conn up' []
 
-doUploadToOne :: Connection -> UploadPlan -> String -> String -> Aff MappingItem
-doUploadToOne conn up parentTableName foreignKey = do
-  matchedRows <- doUploadTable conn up
+-- findExistingRecords :: Connection -> UploadPlan -> Array NamedValue -> Aff (Array MatchedRow)
+-- findExistingRecords conn up filters = do
+--   -- liftEffect $ log (show $ matchRows up filters)
+--   matchedRows :: Array MatchedRow <- query' conn (show $ matchRows up filters)
+--   logJSON {matchedRows: length matchedRows}
+--   pure matchedRows
 
-  let insert = insertForeignKeyMapping up.templateId parentTableName foreignKey
-  execute' conn insert
+-- doToManyToOnes :: Connection -> UploadPlan -> ToMany -> Aff (Array (Array MappingItem))
+-- doToManyToOnes conn parentUploadPlan {foreignKey, tableName, records} = do
+--   for records \{toOneTables} -> do
+--     for toOneTables \(ToOne {foreignKey, table}) -> do
+--       let up = parentUploadPlan { uploadTable = table }
+--       doUploadToOne conn up tableName foreignKey
+--       -- execute' conn (deleteColumn mi)
+--       -- execute' conn (deleteMapping mi)
 
-  ids :: Array {id :: Int} <- query' conn "select last_insert_id() as id"
-  mappingItemId <- case ids of
-        [{id}] -> pure id
-        otherwise -> throwError $ error $ "failed finding new column mapping: " <> show ids
+-- doUploadToOne :: Connection -> UploadPlan -> String -> String -> Aff MappingItem
+-- doUploadToOne conn up parentTableName foreignKey = do
+--   matchedRows <- doUploadTable conn up
 
-  let insert2 = insertForeignKeyValues mappingItemId matchedRows
-  execute' conn insert2
+--   let insert = insertForeignKeyMapping up.templateId parentTableName foreignKey
+--   execute' conn insert
 
-  pure {columnName: foreignKey, id: mappingItemId, columnType: IntType}
+--   ids :: Array {id :: Int} <- query' conn "select last_insert_id() as id"
+--   mappingItemId <- case ids of
+--         [{id}] -> pure id
+--         otherwise -> throwError $ error $ "failed finding new column mapping: " <> show ids
+
+--   let insert2 = insertForeignKeyValues mappingItemId matchedRows
+--   execute' conn insert2
+
+--   pure {columnName: foreignKey, id: mappingItemId, columnType: IntType}
