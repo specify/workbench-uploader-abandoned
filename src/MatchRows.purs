@@ -33,11 +33,53 @@ script up@{templateId: (TemplateId templateId), workbenchId: (WorkbenchId workbe
   [ "start transaction"
   , "set @templateid = " <> show templateId
   , "set @workbenchid = " <> show workbenchId
-  ] <>
-  insertIdFields up.uploadTable <>
-  handleToOnes up.uploadTable <>
-  handleToManys up.uploadTable <>
-  [ "rollback" ]
+  ]
+  <> insertIdFields up.uploadTable
+  <> doUpload up.uploadTable
+  <> [ "rollback" ]
+
+
+doUpload :: UploadTable -> Array String
+doUpload uploadTable =
+  handleToOnes uploadTable
+  <> handleToManys uploadTable
+  <> [ remark $ "find existing " <> uploadTable.tableName <> " records"
+     , findExistingRecords wbTemplateMappingItemId uploadTable
+
+     , remark $ "insert new " <> uploadTable.tableName <> " records"
+     , insertNewRecords wbTemplateMappingItemId uploadTable
+
+     , remark $ "find newly created " <> uploadTable.tableName <> " records"
+     , findExistingRecords wbTemplateMappingItemId uploadTable
+     ]
+  where
+    wbTemplateMappingItemId = varExpr $ uploadTable.idColumn
+
+handleToManys :: UploadTable -> Array String
+handleToManys ut = do
+  {foreignKey, tableName, records} <- ut.toManyTables
+  {index, record: {toOneTables}} <- mapWithIndex (\i r ->  {index: i, record: r}) records
+  toOne <- toOneTables
+  handleToManyToOne tableName index toOne
+
+handleToManyToOne :: String -> Int -> ToOne -> Array String
+handleToManyToOne toManyTable index (ToOne {foreignKey, table}) =
+  handleToOnes table
+  <> handleToManys table
+  <> [ remark $ "find existing " <> table.tableName <> " records for "
+       <> toManyTable <> " " <> (show index)
+     , findExistingRecords wbTemplateMappingItemId table
+
+     , remark $ "insert new " <> table.tableName <> " records for "
+       <> toManyTable <> " " <> (show index)
+     , insertNewRecords wbTemplateMappingItemId table
+
+     , remark $ "find newly created " <> table.tableName <> " records for "
+       <> toManyTable <> " " <> (show index)
+     , findExistingRecords wbTemplateMappingItemId table
+     ]
+  where
+    wbTemplateMappingItemId = varExpr $ toManyIdColumnVar toManyTable index foreignKey
 
 handleToOnes :: UploadTable -> Array String
 handleToOnes ut = do
@@ -50,17 +92,19 @@ handleToOne ut (ToOne {foreignKey, table}) =
   handleToOnes table
   <> handleToManys table
   <> [ remark $ "find existing " <> table.tableName <> " records"
-     , findExistingRecords ut foreignKey table
+     , findExistingRecords wbTemplateMappingItemId table
 
      , remark $ "insert new " <> table.tableName <> " records"
-     , insertNewRecords ut foreignKey table
+     , insertNewRecords wbTemplateMappingItemId table
 
      , remark $ "find newly created " <> table.tableName <> " records"
-     , findExistingRecords ut foreignKey table
+     , findExistingRecords wbTemplateMappingItemId table
      ]
+  where
+    wbTemplateMappingItemId = varExpr $ toOneIdColumnVar ut.tableName foreignKey
 
-insertNewRecords :: UploadTable -> String -> UploadTable -> String
-insertNewRecords ut foreignKey table =
+insertNewRecords :: ScalarExpr -> UploadTable -> String
+insertNewRecords wbTemplateMappingItemId table =
   insertFrom
   ( query
     ([star] <> constantVals)
@@ -79,7 +123,7 @@ insertNewRecords ut foreignKey table =
     r = Alias "r"
     constantVals = (\{columnName, value} -> SelectAs columnName $ wrap value) `map` table.staticValues
     columns = map _.columnName table.mappingItems <> map _.columnName table.staticValues
-    excludeMatched = (r .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor $ varExpr $ toOneIdColumnVar ut.tableName foreignKey)
+    excludeMatched = (r .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor wbTemplateMappingItemId)
 
 rowsWithValuesFor :: ScalarExpr -> Relation
 rowsWithValuesFor workbenchtemplatemappingitemid =
@@ -94,8 +138,8 @@ rowsWithValuesFor workbenchtemplatemappingitemid =
     d = Alias "d"
 
 
-findExistingRecords :: UploadTable -> String -> UploadTable -> String
-findExistingRecords ut foreignKey table =
+findExistingRecords :: ScalarExpr -> UploadTable -> String
+findExistingRecords wbTemplateMappingItemId table =
   insertFrom
   ( query
     [ SelectAs "rowid" $ wb .. "workbenchrowid"
@@ -115,7 +159,7 @@ findExistingRecords ut foreignKey table =
   where
     t = Alias "t"
     wb = Alias "wb"
-    wbTemplateMappingItemId = varExpr $ toOneIdColumnVar ut.tableName foreignKey
+
 
 strategyToWhereClause :: UploadStrategy -> Alias -> Maybe ScalarExpr
 strategyToWhereClause strategy t = case strategy of
@@ -128,9 +172,6 @@ strategyToWhereClause strategy t = case strategy of
 foldl' :: forall a. (a -> a -> a) -> Array a -> Maybe a
 foldl' f as = map (\{ head, tail } -> foldl1 f (head :| tail)) $ uncons as
 
-handleToManys :: UploadTable -> Array String
-handleToManys ut = []
-
 insertIdFields :: UploadTable -> Array String
 insertIdFields ut =
   [ remark "insert an id field for the base table"
@@ -140,7 +181,6 @@ insertIdFields ut =
   ] <>
   insertIdFieldsFromToOnes ut <>
   insertIdFieldsFromToManys ut
-
 
 insertIdFieldsFromToOnes :: UploadTable -> Array String
 insertIdFieldsFromToOnes ut = do
