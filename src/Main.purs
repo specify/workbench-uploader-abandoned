@@ -13,7 +13,7 @@ import Effect.Class (liftEffect)
 import Effect.Console (log, logShow)
 import ExamplePlan (uploadPlan)
 import Foreign (Foreign)
-import MatchRows (script)
+import MatchRows (runPlan, script)
 import MySQL.Connection (Connection, closeConnection, createConnection, defaultConnectionInfo, execute_, query_)
 import MySQL.Transaction as T
 import SQL (Relation)
@@ -32,8 +32,8 @@ execute' conn s = do
 
 main :: Effect Unit
 main = do
-  let statements = intercalate "\n\n" $ map (flip (<>) ";") $ script uploadPlan
-  log statements
+  log $ runPlan uploadPlan
+
 
 
 -- foo = do

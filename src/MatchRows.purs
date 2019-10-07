@@ -13,98 +13,104 @@ where
 
 import Prelude
 
+import Control.Monad.Writer (Writer, execWriter, tell)
 import Data.Array (fromFoldable, intercalate, mapWithIndex, nub, nubBy, uncons)
+import Data.Foldable (for_)
+import Data.FoldableWithIndex (forWithIndex_)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import Data.Traversable (for)
 import Data.Unfoldable (fromMaybe)
 import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, notInSubQuery, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, varExpr, (..))
-import UploadPlan (ColumnType(..), MappingItem, NamedValue, TemplateId(..), ToOne(..), UploadPlan, UploadStrategy(..), UploadTable, WorkbenchId(..))
+import UploadPlan (ColumnType(..), MappingItem, NamedValue, TemplateId(..), ToOne(..), UploadStrategy(..), UploadTable, WorkbenchId(..), UploadPlan)
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
 
-remark :: String -> String
+type Script = Writer (Array String) Unit
+
+runPlan :: UploadPlan -> String
+runPlan p =
+  intercalate "\n\n" $ map (flip (<>) ";") $ execWriter $ script p
+
+script :: UploadPlan -> Script
+script up@{templateId: (TemplateId templateId), workbenchId: (WorkbenchId workbenchId)} = do
+  tell ["start transaction"]
+  tell ["set @templateid = " <> show templateId]
+  tell ["set @workbenchid = " <> show workbenchId]
+  insertIdFields up.uploadTable
+  doUpload up.uploadTable
+  tell [ "rollback" ]
+
+remark :: String -> Script
 remark message =
-  "select '" <> message <> "' as message"
+  tell ["select '" <> message <> "' as message"]
 
-script :: UploadPlan -> Array String
-script up@{templateId: (TemplateId templateId), workbenchId: (WorkbenchId workbenchId)} =
-  [ "start transaction"
-  , "set @templateid = " <> show templateId
-  , "set @workbenchid = " <> show workbenchId
-  ]
-  <> insertIdFields up.uploadTable
-  <> doUpload up.uploadTable
-  <> [ "rollback" ]
-
-
-doUpload :: UploadTable -> Array String
-doUpload uploadTable =
+doUpload :: UploadTable -> Script
+doUpload uploadTable = do
   handleToOnes uploadTable
-  <> handleToManys uploadTable
-  <> [ remark $ "find existing " <> uploadTable.tableName <> " records"
-     , findExistingRecords wbTemplateMappingItemId uploadTable
+  handleToManys uploadTable
 
-     , remark $ "insert new " <> uploadTable.tableName <> " records"
-     , insertNewRecords wbTemplateMappingItemId uploadTable
+  let wbTemplateMappingItemId = varExpr $ uploadTable.idColumn
 
-     , remark $ "find newly created " <> uploadTable.tableName <> " records"
-     , findExistingRecords wbTemplateMappingItemId uploadTable
-     ]
-  where
-    wbTemplateMappingItemId = varExpr $ uploadTable.idColumn
+  remark $ "find existing " <> uploadTable.tableName <> " records"
+  findExistingRecords wbTemplateMappingItemId uploadTable
 
-handleToManys :: UploadTable -> Array String
+  remark $ "insert new " <> uploadTable.tableName <> " records"
+  insertNewRecords wbTemplateMappingItemId uploadTable
+
+  remark $ "find newly created " <> uploadTable.tableName <> " records"
+  findExistingRecords wbTemplateMappingItemId uploadTable
+
+
+handleToManys :: UploadTable -> Script
 handleToManys ut = do
-  {foreignKey, tableName, records} <- ut.toManyTables
-  {index, record: {toOneTables}} <- mapWithIndex (\i r ->  {index: i, record: r}) records
-  toOne <- toOneTables
-  handleToManyToOne tableName index toOne
+  for_ ut.toManyTables \{foreignKey, tableName, records} ->
+    forWithIndex_ records \index record ->
+      for_ record.toOneTables \toOne ->
+        handleToManyToOne tableName index toOne
 
-handleToManyToOne :: String -> Int -> ToOne -> Array String
-handleToManyToOne toManyTable index (ToOne {foreignKey, table}) =
+handleToManyToOne :: String -> Int -> ToOne -> Script
+handleToManyToOne toManyTable index (ToOne {foreignKey, table}) = do
   handleToOnes table
-  <> handleToManys table
-  <> [ remark $ "find existing " <> table.tableName <> " records for "
-       <> toManyTable <> " " <> (show index)
-     , findExistingRecords wbTemplateMappingItemId table
+  handleToManys table
 
-     , remark $ "insert new " <> table.tableName <> " records for "
-       <> toManyTable <> " " <> (show index)
-     , insertNewRecords wbTemplateMappingItemId table
+  let wbTemplateMappingItemId = varExpr $ toManyIdColumnVar toManyTable index foreignKey
 
-     , remark $ "find newly created " <> table.tableName <> " records for "
-       <> toManyTable <> " " <> (show index)
-     , findExistingRecords wbTemplateMappingItemId table
-     ]
-  where
-    wbTemplateMappingItemId = varExpr $ toManyIdColumnVar toManyTable index foreignKey
+  remark $ "find existing " <> table.tableName <> " records for " <> toManyTable <> " " <> (show index)
+  findExistingRecords wbTemplateMappingItemId table
 
-handleToOnes :: UploadTable -> Array String
-handleToOnes ut = do
-  toOne <- ut.toOneTables
-  handleToOne ut toOne
+  remark $ "insert new " <> table.tableName <> " records for " <> toManyTable <> " " <> (show index)
+  insertNewRecords wbTemplateMappingItemId table
+
+  remark $ "find newly created " <> table.tableName <> " records for " <> toManyTable <> " " <> (show index)
+  findExistingRecords wbTemplateMappingItemId table
 
 
-handleToOne :: UploadTable -> ToOne -> Array String
-handleToOne ut (ToOne {foreignKey, table}) =
+handleToOnes :: UploadTable -> Script
+handleToOnes ut =
+  for_ ut.toOneTables \toOne -> handleToOne ut toOne
+
+
+handleToOne :: UploadTable -> ToOne -> Script
+handleToOne ut (ToOne {foreignKey, table}) = do
   handleToOnes table
-  <> handleToManys table
-  <> [ remark $ "find existing " <> table.tableName <> " records"
-     , findExistingRecords wbTemplateMappingItemId table
+  handleToManys table
 
-     , remark $ "insert new " <> table.tableName <> " records"
-     , insertNewRecords wbTemplateMappingItemId table
+  remark $ "find existing " <> table.tableName <> " records"
+  findExistingRecords wbTemplateMappingItemId table
 
-     , remark $ "find newly created " <> table.tableName <> " records"
-     , findExistingRecords wbTemplateMappingItemId table
-     ]
+  remark $ "insert new " <> table.tableName <> " records"
+  insertNewRecords wbTemplateMappingItemId table
+
+  remark $ "find newly created " <> table.tableName <> " records"
+  findExistingRecords wbTemplateMappingItemId table
+
   where
     wbTemplateMappingItemId = varExpr $ toOneIdColumnVar ut.tableName foreignKey
 
-insertNewRecords :: ScalarExpr -> UploadTable -> String
-insertNewRecords wbTemplateMappingItemId table =
+insertNewRecords :: ScalarExpr -> UploadTable -> Script
+insertNewRecords wbTemplateMappingItemId table = tell $ pure $
   insertFrom
   ( query
     ([star] <> constantVals)
@@ -138,8 +144,8 @@ rowsWithValuesFor workbenchtemplatemappingitemid =
     d = Alias "d"
 
 
-findExistingRecords :: ScalarExpr -> UploadTable -> String
-findExistingRecords wbTemplateMappingItemId table =
+findExistingRecords :: ScalarExpr -> UploadTable -> Script
+findExistingRecords wbTemplateMappingItemId table = tell $ pure $
   insertFrom
   ( query
     [ SelectAs "rowid" $ wb .. "workbenchrowid"
@@ -160,7 +166,6 @@ findExistingRecords wbTemplateMappingItemId table =
     t = Alias "t"
     wb = Alias "wb"
 
-
 strategyToWhereClause :: UploadStrategy -> Alias -> Maybe ScalarExpr
 strategyToWhereClause strategy t = case strategy of
   AlwaysCreate -> Nothing
@@ -170,48 +175,52 @@ strategyToWhereClause strategy t = case strategy of
     matchAll values = foldl' and $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value) values
 
 foldl' :: forall a. (a -> a -> a) -> Array a -> Maybe a
-foldl' f as = map (\{ head, tail } -> foldl1 f (head :| tail)) $ uncons as
+foldl' f as = (\{ head, tail } -> foldl1 f (head :| tail)) <$> uncons as
 
-insertIdFields :: UploadTable -> Array String
-insertIdFields ut =
-  [ remark "insert an id field for the base table"
-  , insertValues [[wrap $ "now()", wrap $ "@templateid", stringLiteral ut.idColumn, stringLiteral ut.tableName]]
-    ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
-  , setUserVar ut.idColumn (wrap "last_insert_id()")
-  ] <>
-  insertIdFieldsFromToOnes ut <>
+insertIdFields :: UploadTable -> Script
+insertIdFields ut = do
+  remark "insert an id field for the base table"
+  tell [ insertValues [[wrap $ "now()", wrap $ "@templateid", stringLiteral ut.idColumn, stringLiteral ut.tableName]]
+         ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
+       ]
+  tell [ setUserVar ut.idColumn (wrap "last_insert_id()") ]
+
+  insertIdFieldsFromToOnes ut
   insertIdFieldsFromToManys ut
 
-insertIdFieldsFromToOnes :: UploadTable -> Array String
-insertIdFieldsFromToOnes ut = do
-  (ToOne {foreignKey, table}) <- ut.toOneTables
-  ([ remark $ "insert an id field for the " <> ut.tableName <> " to " <> table.tableName <> " foreign key"
-   , insertValues
-     [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral ut.tableName]]
-     ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
-   , setUserVar (toOneIdColumnVar ut.tableName foreignKey) (wrap "last_insert_id()")
-   ] <>
-   insertIdFieldsFromToOnes table <>
-   insertIdFieldsFromToManys table
-  )
+insertIdFieldsFromToOnes :: UploadTable -> Script
+insertIdFieldsFromToOnes ut =
+  for_ ut.toOneTables \(ToOne {foreignKey, table}) -> do
+    remark $ "insert an id field for the " <> ut.tableName <> " to " <> table.tableName <> " foreign key"
+    tell [ insertValues
+           [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral ut.tableName]]
+           ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
+         ]
+
+    tell [ setUserVar (toOneIdColumnVar ut.tableName foreignKey) (wrap "last_insert_id()") ]
+
+    insertIdFieldsFromToOnes table
+    insertIdFieldsFromToManys table
+
 
 toOneIdColumnVar :: String -> String -> String
 toOneIdColumnVar tableName foreignKey = tableName <> "_" <> foreignKey
 
-insertIdFieldsFromToManys :: UploadTable -> Array String
+insertIdFieldsFromToManys :: UploadTable -> Script
 insertIdFieldsFromToManys ut = do
-  {foreignKey, tableName, records} <- ut.toManyTables
-  {index, record: {toOneTables}} <- mapWithIndex (\i r ->  {index: i, record: r}) records
-  (ToOne {foreignKey, table}) <- toOneTables
-  ([ remark $ "insert an id field for the " <> tableName <> show index <> " to " <> table.tableName <> " foreign key"
-   , insertValues
-     [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral tableName]]
-     ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
-   , setUserVar (toManyIdColumnVar tableName index foreignKey) (wrap "last_insert_id()")
-   ] <>
-   insertIdFieldsFromToOnes table <>
-   insertIdFieldsFromToManys table
-  )
+  for_ ut.toManyTables \{foreignKey, tableName, records} ->
+    forWithIndex_ records \index record ->
+      for_  record.toOneTables  \(ToOne {foreignKey, table}) -> do
+        remark $ "insert an id field for the " <> tableName <> show index <> " to " <> table.tableName <> " foreign key"
+        tell [ insertValues
+               [[wrap $ "now()", wrap $ "@templateid", stringLiteral foreignKey, stringLiteral tableName]]
+               ["timestampcreated", "workbenchtemplateid", "fieldname", "tablename"] "workbenchtemplatemappingitem"
+             ]
+        tell [ setUserVar (toManyIdColumnVar tableName index foreignKey) (wrap "last_insert_id()") ]
+
+        insertIdFieldsFromToOnes table
+        insertIdFieldsFromToManys table
+
 
 toManyIdColumnVar :: String -> Int -> String -> String
 toManyIdColumnVar tableName index foreignKey = tableName <> show index <> "_" <> foreignKey
