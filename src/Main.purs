@@ -18,7 +18,7 @@ import MySQL.Connection (Connection, closeConnection, createConnection, defaultC
 import MySQL.Transaction as T
 import SQL (Relation)
 import Simple.JSON (class ReadForeign, class WriteForeign, write, writeJSON)
-import UploadPlan (ColumnType(..), MappingItem, TemplateId(..), ToMany, ToManyRecord, ToOne(..), UploadPlan, UploadStrategy(..), UploadTable, WorkbenchId(..), NamedValue)
+
 
 query' :: forall a. ReadForeign a => Connection -> String -> Aff (Array a)
 query' conn q = do

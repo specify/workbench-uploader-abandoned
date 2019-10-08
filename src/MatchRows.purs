@@ -23,9 +23,11 @@ import Data.NonEmpty (foldl1, (:|))
 import Data.Traversable (for)
 import Data.Unfoldable (fromMaybe)
 import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, notInSubQuery, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, varExpr, (..))
-import UploadPlan (ColumnType(..), MappingItem, NamedValue, TemplateId(..), ToOne(..), UploadStrategy(..), UploadTable, WorkbenchId(..), UploadPlan)
+import UploadPlan (ColumnType(..), NamedValue, TemplateId(..), ToOne(..), UploadStrategy(..), UploadTable, WorkbenchId(..), UploadPlan)
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
+
+type MappingItem = {columnName :: String, columnType :: ColumnType, id :: ScalarExpr}
 
 type Script = Writer (Array String) Unit
 
@@ -115,9 +117,9 @@ insertNewRecords wbTemplateMappingItemId table = tell $ pure $
   ( query
     ([star] <> constantVals)
     (flip as (Alias "newvalues") $ queryDistinct
-     (mapWithIndex makeSelectWB table.mappingItems)
+     (mapWithIndex makeSelectWB mappingItems)
      (Table "workbenchrow" `as` r)
-     (mapWithIndex makeJoinWB table.mappingItems)
+     (mapWithIndex makeJoinWB mappingItems)
      (foldl' and $ [(r .. "workbenchid") `equal` varExpr "workbenchid", excludeMatched])
     )
     []
@@ -128,8 +130,12 @@ insertNewRecords wbTemplateMappingItemId table = tell $ pure $
   where
     r = Alias "r"
     constantVals = (\{columnName, value} -> SelectAs columnName $ wrap value) `map` table.staticValues
-    columns = map _.columnName table.mappingItems <> map _.columnName table.staticValues
+    columns = map _.columnName mappingItems <> map _.columnName table.staticValues
     excludeMatched = (r .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor wbTemplateMappingItemId)
+    mappingItems = map parseMappingItem table.mappingItems <> toOneMappingItems table
+
+parseMappingItem :: {columnName :: String, columnType :: ColumnType, id :: Int} -> MappingItem
+parseMappingItem i = i {id = intLiteral i.id}
 
 rowsWithValuesFor :: ScalarExpr -> Relation
 rowsWithValuesFor workbenchtemplatemappingitemid =
@@ -154,7 +160,7 @@ findExistingRecords wbTemplateMappingItemId table = tell $ pure $
     , SelectTerm $ wbTemplateMappingItemId
     ]
     (Table table.tableName `as` t)
-    [join (rowsFromWB (varExpr "workbenchid") table.mappingItems) wb (foldl' and $ map compValues table.mappingItems)]
+    [join (rowsFromWB (varExpr "workbenchid") mappingItems) wb (foldl' and $ map compValues mappingItems)]
     (foldl' and $
      [ (wb .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor wbTemplateMappingItemId) ]
      <> (strategyToWhereClause table.strategy t # fromFoldable)
@@ -165,6 +171,11 @@ findExistingRecords wbTemplateMappingItemId table = tell $ pure $
   where
     t = Alias "t"
     wb = Alias "wb"
+    mappingItems = map parseMappingItem table.mappingItems <> toOneMappingItems table
+
+toOneMappingItems :: UploadTable -> Array MappingItem
+toOneMappingItems ut = ut.toOneTables <#> \(ToOne {foreignKey, table}) ->
+  {columnName: foreignKey, columnType: IntType, id: varExpr $ toOneIdColumnVar ut.tableName foreignKey}
 
 strategyToWhereClause :: UploadStrategy -> Alias -> Maybe ScalarExpr
 strategyToWhereClause strategy t = case strategy of
@@ -225,25 +236,6 @@ insertIdFieldsFromToManys ut = do
 toManyIdColumnVar :: String -> Int -> String -> String
 toManyIdColumnVar tableName index foreignKey = tableName <> show index <> "_" <> foreignKey
 
--- matchRows_ :: WorkbenchId -> Array MappingItem -> Relation -> (Alias -> Maybe ScalarExpr) -> String -> Relation
--- matchRows_ (WorkbenchId wbId) mappingItems matchTable whereExpr idCol =
---   query [SelectAs "rowid" $ wb .. "workbenchrowid", SelectAs "recordid" $ t .. idCol, SelectTerm $ wb .. "rownumber"]
---   (matchTable `as` t) joinWB (whereExpr t)
---   where
---     (t :: Alias) = wrap "t"
---     (wb :: Alias) = wrap "wb"
---     joinWB = case uncons $ map compValues mappingItems of
---       Just { head: c, tail: cs } ->  [join (rowsFromWB wbId mappingItems) wb $ Just (foldl1 and (c :| cs))]
---       Nothing -> []
-
--- matchRows :: UploadPlan -> Array NamedValue -> Relation
--- matchRows up filters =
---   matchRows_ up.workbenchId up.uploadTable.mappingItems (Table up.uploadTable.tableName) whereClause up.uploadTable.idColumn
---   where whereClause =
---           \t -> map (\{head, tail} -> foldl1 and (head :| tail)) $
---                 uncons $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value)
---                 filters
-
 rowsFromWB :: ScalarExpr -> Array MappingItem -> Relation
 rowsFromWB wbId mappingItems =
   query
@@ -263,7 +255,7 @@ compValues item = case item.columnType of
 makeJoinWB :: Int -> MappingItem -> JoinExpr
 makeJoinWB i item = leftJoin (Table "workbenchdataitem") dataItem $ Just $
                     ((dataItem .. "workbenchrowid") `equal` (r .. "workbenchrowid")) `and`
-                    ((dataItem .. "workbenchtemplatemappingitemid") `equal` (wrap $ show item.id))
+                    ((dataItem .. "workbenchtemplatemappingitemid") `equal` item.id)
   where (dataItem :: Alias) = wrap ("c" <> (show i))
         (r :: Alias) = wrap "r"
 
@@ -277,65 +269,3 @@ parseValue (DateType format) value = strToDate value $ stringLiteral format
 makeSelectWB :: Int -> MappingItem -> SelectTerm
 makeSelectWB i item = SelectAs item.columnName (parseValue item.columnType value)
   where value = (wrap $ "c" <> (show i)) .. "celldata"
-
-
-selectNewVals :: WorkbenchId -> Array MappingItem -> Array Int -> Relation
-selectNewVals (WorkbenchId wbId) mappingItems matched =
-  queryDistinct
-  (mapWithIndex makeSelectWB mappingItems)
-  (Table "workbenchrow" `as` r)
-  (mapWithIndex makeJoinWB mappingItems)
-  (Just $ foldl1 and ((r .. "workbenchid") `equal` (wrap $ show wbId) :| excludeMatched r matched))
-  where (r :: Alias) = wrap "r"
-
-selectForInsert :: WorkbenchId -> Array MappingItem -> Array ExtraValue -> Array Int -> Relation
-selectForInsert wbId mappingItems extraFields matched =
-  query ([star] <> extraFields_)
-  (selectNewVals wbId mappingItems matched `as` newValues)
-  []
-  Nothing
-  where (newValues :: Alias) = wrap "newvalues"
-        extraFields_ = (\{columnName, value} -> SelectAs columnName $ wrap value) `map` extraFields
-
-excludeMatched :: Alias -> Array Int -> Array ScalarExpr
-excludeMatched row matched = fromMaybe $ (row .. "rownumber") `notIn` rowList
-  where rowList = map (show >>> wrap) $ nub matched
-
-type ExtraValue = {columnName :: String, value :: String}
-
-insertNewVals_ :: String -> WorkbenchId -> Array MappingItem -> Array ExtraValue -> Array Int -> String
-insertNewVals_ table wbId mappingItems extraFields matched =
-  insertFrom (selectForInsert wbId mappingItems extraFields matched) columns table
-  where columns = map _.columnName mappingItems <> map _.columnName extraFields
-
-insertNewVals :: UploadPlan -> Array Int -> String
-insertNewVals up matchedRows =
-  insertNewVals_ ut.tableName up.workbenchId ut.mappingItems ut.staticValues matchedRows
-  where ut = up.uploadTable
-
-
-insertForeignKeyMapping :: TemplateId -> String -> String -> String
-insertForeignKeyMapping (TemplateId wbTemplateId) tableName columnName =
-  insertValues [[wrap "now()", stringLiteral columnName, stringLiteral tableName, intLiteral wbTemplateId]]
-  ["timestampcreated", "fieldname", "tablename", "workbenchtemplateid"] "workbenchtemplatemappingitem"
-
-
-selectForeignKeyMapping :: TemplateId -> String -> String -> Relation
-selectForeignKeyMapping wbTemplateId tableName columnName =
-  query [SelectAs "id" $ i .. "workbenchtemplatemappingitemid"] (from $ Table "workbenchtemplatemappingitem") [] (Just whereClause)
-  where
-    i = Alias "workbenchtemplatemappingitem"
-    whereClause = ((i .. "fieldname") `equal` stringLiteral columnName) `and` ((i .. "tablename") `equal` stringLiteral tableName)
-
-
-insertForeignKeyValues :: Int -> Array MatchedRow -> String
-insertForeignKeyValues wbTemplateItemId fks =
-  insertValues (map rowValues onePerRow) ["workbenchtemplatemappingitemid", "rownumber", "workbenchrowid", "celldata"] "workbenchdataitem"
-  where onePerRow = nubBy (\{rowid:a} {rowid:b} -> compare a b) fks
-        rowValues fk = [intLiteral wbTemplateItemId, intLiteral fk.rownumber, intLiteral fk.rowid, stringLiteral $ show fk.recordid]
-
-deleteColumn :: MappingItem -> String
-deleteColumn mi = "delete from workbenchdataitem where workbenchtemplatemappingitemid = " <> (show mi.id)
-
-deleteMapping :: MappingItem -> String
-deleteMapping mi = "delete from workbenchtemplatemappingitem where workbenchtemplatemappingitemid = " <> (show mi.id)

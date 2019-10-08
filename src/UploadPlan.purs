@@ -1,6 +1,5 @@
 module UploadPlan where
 
-type MappingItem = {columnName :: String, columnType :: ColumnType, id :: Int}
 
 data ColumnType = StringType
                 | DoubleType
@@ -23,7 +22,7 @@ type UploadTable =
   { tableName :: String
   , idColumn :: String
   , strategy :: UploadStrategy
-  , mappingItems :: Array MappingItem
+  , mappingItems :: Array {columnName :: String, columnType :: ColumnType, id :: Int}
   , staticValues :: Array NamedValue
   , toOneTables :: Array ToOne
   , toManyTables :: Array ToMany
@@ -41,5 +40,5 @@ type ToManyRecord =
   { filters :: Array NamedValue
   , staticValues :: Array NamedValue
   , toOneTables :: Array ToOne
-  , mappingItems :: Array MappingItem
+  , mappingItems :: Array {columnName :: String, columnType :: ColumnType, id :: Int}
   }
