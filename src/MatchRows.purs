@@ -22,7 +22,7 @@ import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
 import Data.Traversable (for)
 import Data.Unfoldable (fromMaybe)
-import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, notInSubQuery, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, varExpr, (..))
+import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, notInSubQuery, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, tuple, varExpr, (..), (<=>))
 import UploadPlan (ColumnType(..), NamedValue, TemplateId(..), ToOne(..), UploadStrategy(..), UploadTable, WorkbenchId(..), UploadPlan)
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
@@ -37,12 +37,14 @@ runPlan p =
 
 script :: UploadPlan -> Script
 script up@{templateId: (TemplateId templateId), workbenchId: (WorkbenchId workbenchId)} = do
+  tell [ "rollback" ]
   tell ["start transaction"]
   tell ["set @templateid = " <> show templateId]
   tell ["set @workbenchid = " <> show workbenchId]
   insertIdFields up.uploadTable
   doUpload up.uploadTable
   tell [ "rollback" ]
+
 
 remark :: String -> Script
 remark message =
@@ -160,7 +162,7 @@ findExistingRecords wbTemplateMappingItemId table = tell $ pure $
     , SelectTerm $ wbTemplateMappingItemId
     ]
     (Table table.tableName `as` t)
-    [join (rowsFromWB (varExpr "workbenchid") mappingItems) wb (foldl' and $ map compValues mappingItems)]
+    [join (rowsFromWB (varExpr "workbenchid") mappingItems) wb (Just $ valuesFromWB <=> valuesFromTable)]
     (foldl' and $
      [ (wb .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor wbTemplateMappingItemId) ]
      <> (strategyToWhereClause table.strategy t # fromFoldable)
@@ -171,7 +173,10 @@ findExistingRecords wbTemplateMappingItemId table = tell $ pure $
   where
     t = Alias "t"
     wb = Alias "wb"
+    r = Alias "r"
     mappingItems = map parseMappingItem table.mappingItems <> toOneMappingItems table
+    valuesFromWB = tuple $ mappingItems <#> \{columnName} -> wb .. columnName
+    valuesFromTable = tuple $ mappingItems <#> \{columnName} -> t .. columnName
 
 toOneMappingItems :: UploadTable -> Array MappingItem
 toOneMappingItems ut = ut.toOneTables <#> \(ToOne {foreignKey, table}) ->
@@ -183,7 +188,8 @@ strategyToWhereClause strategy t = case strategy of
   AlwaysMatch values -> matchAll values
   MatchOrCreate values -> matchAll values
   where
-    matchAll values = foldl' and $ map (\{columnName, value} -> (t .. columnName) `equal` wrap value) values
+    matchAll values = Just $ (tuple $ map (\v -> t .. v.columnName) values) <=> (tuple $ map (\v -> wrap v.value) values)
+
 
 foldl' :: forall a. (a -> a -> a) -> Array a -> Maybe a
 foldl' f as = (\{ head, tail } -> foldl1 f (head :| tail)) <$> uncons as
@@ -245,12 +251,6 @@ rowsFromWB wbId mappingItems =
   (Just $ (r .. "workbenchid") `equal` wbId)
   where (r :: Alias) = wrap "r"
 
-compValues :: MappingItem -> ScalarExpr
-compValues item = case item.columnType of
-  StringType -> (v1 `equal` v2) `or` (isNull v1 `and` isNull v2) `or` (isNull v1 `and` (v2 `equal` wrap "''"))
-  otherwise -> (v1 `equal` v2) `or` (isNull v1 `and` isNull v2)
-  where v1 = wrap "t" .. item.columnName
-        v2 = wrap "wb" .. item.columnName
 
 makeJoinWB :: Int -> MappingItem -> JoinExpr
 makeJoinWB i item = leftJoin (Table "workbenchdataitem") dataItem $ Just $
@@ -260,10 +260,10 @@ makeJoinWB i item = leftJoin (Table "workbenchdataitem") dataItem $ Just $
         (r :: Alias) = wrap "r"
 
 parseValue :: ColumnType -> ScalarExpr -> ScalarExpr
-parseValue StringType value = value
-parseValue DoubleType value = nullIf value (wrap "''") `plus` (wrap "0.0")
-parseValue IntType value = nullIf value (wrap "''") `plus` (wrap "0")
-parseValue DecimalType value = nullIf value (wrap "''")
+parseValue StringType value = nullIf value (stringLiteral "")
+parseValue DoubleType value = nullIf value (stringLiteral "") `plus` (wrap "0.0")
+parseValue IntType value = nullIf value (stringLiteral "") `plus` (wrap "0")
+parseValue DecimalType value = nullIf value (stringLiteral "")
 parseValue (DateType format) value = strToDate value $ stringLiteral format
 
 makeSelectWB :: Int -> MappingItem -> SelectTerm

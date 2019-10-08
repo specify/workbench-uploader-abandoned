@@ -133,3 +133,11 @@ setUserVar varName value = "set @" <> varName <> " = " <> unwrap value
 
 varExpr :: String -> ScalarExpr
 varExpr varName = ScalarExpr $ "@" <> varName
+
+tuple :: Array ScalarExpr -> ScalarExpr
+tuple exprs = ScalarExpr $ "(" <> (intercalate ", " $ map unwrap exprs) <> ")"
+
+isNotDistinctFrom :: ScalarExpr -> ScalarExpr -> ScalarExpr
+isNotDistinctFrom x y = ScalarExpr $ (unwrap x) <> " <=> " <> (unwrap y)
+
+infixl 8 isNotDistinctFrom as <=>
