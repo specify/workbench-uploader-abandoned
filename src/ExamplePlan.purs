@@ -61,10 +61,7 @@ uploadPlan =
 
 collectorRecord :: Int -> Int -> ToManyRecord
 collectorRecord ordernumber id =
-  { filters:
-    [ {columnName: "divisionid", value: "2"}
-    , {columnName: "ordernumber", value: show ordernumber}
-    ]
+  { filters: [ {columnName: "ordernumber", value: show ordernumber} ]
   , staticValues:
     [ {columnName: "divisionid", value: "2"}
     , {columnName: "ordernumber", value: show ordernumber}

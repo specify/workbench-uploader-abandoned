@@ -14,7 +14,7 @@ where
 import Prelude
 
 import Control.Monad.Writer (Writer, execWriter, tell)
-import Data.Array (fromFoldable, intercalate, mapWithIndex, nub, nubBy, uncons)
+import Data.Array (fromFoldable, intercalate, mapWithIndex, nub, nubBy, snoc, uncons)
 import Data.Foldable (for_)
 import Data.FoldableWithIndex (forWithIndex_)
 import Data.Maybe (Maybe(..))
@@ -23,11 +23,11 @@ import Data.NonEmpty (foldl1, (:|))
 import Data.Traversable (for)
 import Data.Unfoldable (fromMaybe)
 import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, from, insertFrom, insertValues, intLiteral, isNull, join, leftJoin, notIn, notInSubQuery, nullIf, or, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, tuple, varExpr, (..), (<=>))
-import UploadPlan (ColumnType(..), NamedValue, TemplateId(..), ToOne(..), UploadStrategy(..), UploadTable, WorkbenchId(..), UploadPlan)
+import UploadPlan (ColumnType(..), NamedValue, TemplateId(..), ToOne(..), UploadPlan, UploadStrategy(..), UploadTable, WorkbenchId(..), ToManyRecord)
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
 
-type MappingItem = {columnName :: String, columnType :: ColumnType, id :: ScalarExpr}
+type MappingItem = {tableColumn :: String, tableAlias :: Alias, selectFromWBas :: String, columnType :: ColumnType, mappingId :: ScalarExpr}
 
 type Script = Writer (Array String) Unit
 
@@ -130,14 +130,21 @@ insertNewRecords wbTemplateMappingItemId table = tell $ pure $
   columns
   table.tableName
   where
+    t = Alias "t" -- unused
     r = Alias "r"
     constantVals = (\{columnName, value} -> SelectAs columnName $ wrap value) `map` table.staticValues
-    columns = map _.columnName mappingItems <> map _.columnName table.staticValues
+    columns = map _.tableColumn mappingItems <> map _.columnName table.staticValues
     excludeMatched = (r .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor wbTemplateMappingItemId)
-    mappingItems = map parseMappingItem table.mappingItems <> toOneMappingItems table
+    mappingItems = map (parseMappingItem t) table.mappingItems <> toOneMappingItems table t
 
-parseMappingItem :: {columnName :: String, columnType :: ColumnType, id :: Int} -> MappingItem
-parseMappingItem i = i {id = intLiteral i.id}
+parseMappingItem :: Alias -> {columnName :: String, columnType :: ColumnType, id :: Int} -> MappingItem
+parseMappingItem t i =
+  { mappingId: intLiteral i.id
+  , tableAlias: t
+  , columnType: i.columnType
+  , selectFromWBas: i.columnName
+  , tableColumn: i.columnName
+  }
 
 rowsWithValuesFor :: ScalarExpr -> Relation
 rowsWithValuesFor workbenchtemplatemappingitemid =
@@ -162,7 +169,7 @@ findExistingRecords wbTemplateMappingItemId table = tell $ pure $
     , SelectTerm $ wbTemplateMappingItemId
     ]
     (Table table.tableName `as` t)
-    [join (rowsFromWB (varExpr "workbenchid") mappingItems) wb (Just $ valuesFromWB <=> valuesFromTable)]
+    (snoc (joinToManys t table) joinWB)
     (foldl' and $
      [ (wb .. "workbenchrowid") `notInSubQuery` (rowsWithValuesFor wbTemplateMappingItemId) ]
      <> (strategyToWhereClause table.strategy t # fromFoldable)
@@ -174,13 +181,61 @@ findExistingRecords wbTemplateMappingItemId table = tell $ pure $
     t = Alias "t"
     wb = Alias "wb"
     r = Alias "r"
-    mappingItems = map parseMappingItem table.mappingItems <> toOneMappingItems table
-    valuesFromWB = tuple $ mappingItems <#> \{columnName} -> wb .. columnName
-    valuesFromTable = tuple $ mappingItems <#> \{columnName} -> t .. columnName
+    mappingItems = map (parseMappingItem t) table.mappingItems <> toOneMappingItems table t <> toManyMappingItems table
+    valuesFromWB = tuple $ mappingItems <#> \{selectFromWBas} -> wb .. selectFromWBas
+    valuesFromTable = tuple $ mappingItems <#> \{tableColumn, tableAlias} -> tableAlias .. tableColumn
+    joinWB = join (rowsFromWB (varExpr "workbenchid") mappingItems) wb (Just $ valuesFromWB <=> valuesFromTable)
 
-toOneMappingItems :: UploadTable -> Array MappingItem
-toOneMappingItems ut = ut.toOneTables <#> \(ToOne {foreignKey, table}) ->
-  {columnName: foreignKey, columnType: IntType, id: varExpr $ toOneIdColumnVar ut.tableName foreignKey}
+
+joinToManys :: Alias -> UploadTable -> Array JoinExpr
+joinToManys t ut = do
+  {foreignKey, tableName, records} <- ut.toManyTables
+  mapWithIndex (joinToMany t tableName foreignKey) records
+
+
+joinToMany :: Alias -> String -> String -> Int -> ToManyRecord -> JoinExpr
+joinToMany t tableName foreignKey index {filters} =
+  leftJoin (Table tableName) alias $ foldl' and ([ (alias .. foreignKey) `equal` (t .. foreignKey) ] <> filterExprs)
+  where
+    alias = Alias $ tableName <> show index
+    filterExprs = filters <#> \{columnName, value} -> (alias .. columnName) `equal` (wrap value)
+
+toManyMappingItems :: UploadTable -> Array MappingItem
+toManyMappingItems ut = do
+  {foreignKey, tableName, records} <- ut.toManyTables
+  mappingItems <- mapWithIndex (toManyRecordMappingItems tableName) records
+  mappingItems
+
+toManyRecordMappingItems :: String -> Int -> ToManyRecord -> Array MappingItem
+toManyRecordMappingItems tableName index {mappingItems, toOneTables} =
+  map (toManyToOneMappingItems tableName index) toOneTables
+  <> map (parseToManyMappingItem tableName index) mappingItems
+
+parseToManyMappingItem :: String -> Int -> {id :: Int, columnType :: ColumnType, columnName :: String} -> MappingItem
+parseToManyMappingItem tableName index item =
+  { selectFromWBas: tableName <> (show index) <> item.columnName
+  , columnType: item.columnType
+  , mappingId: intLiteral item.id
+  , tableAlias: Alias $ tableName <> (show index)
+  , tableColumn: item.columnName
+  }
+
+toManyToOneMappingItems :: String -> Int -> ToOne -> MappingItem
+toManyToOneMappingItems tableName index (ToOne {foreignKey, table}) =
+   { selectFromWBas: tableName <> (show index) <> foreignKey
+   , columnType: IntType
+   , mappingId: varExpr $ toManyIdColumnVar tableName index foreignKey
+   , tableAlias: Alias $ tableName <> (show index)
+   , tableColumn: foreignKey
+   }
+
+toOneMappingItems :: UploadTable -> Alias -> Array MappingItem
+toOneMappingItems ut t = ut.toOneTables <#> \(ToOne {foreignKey, table}) ->
+  {tableColumn: foreignKey
+  , columnType: IntType
+  , mappingId: varExpr $ toOneIdColumnVar ut.tableName foreignKey
+  , tableAlias: t
+  , selectFromWBas: foreignKey}
 
 strategyToWhereClause :: UploadStrategy -> Alias -> Maybe ScalarExpr
 strategyToWhereClause strategy t = case strategy of
@@ -255,9 +310,9 @@ rowsFromWB wbId mappingItems =
 makeJoinWB :: Int -> MappingItem -> JoinExpr
 makeJoinWB i item = leftJoin (Table "workbenchdataitem") dataItem $ Just $
                     ((dataItem .. "workbenchrowid") `equal` (r .. "workbenchrowid")) `and`
-                    ((dataItem .. "workbenchtemplatemappingitemid") `equal` item.id)
-  where (dataItem :: Alias) = wrap ("c" <> (show i))
-        (r :: Alias) = wrap "r"
+                    ((dataItem .. "workbenchtemplatemappingitemid") `equal` item.mappingId)
+  where dataItem = Alias ("c" <> (show i))
+        r = Alias "r"
 
 parseValue :: ColumnType -> ScalarExpr -> ScalarExpr
 parseValue StringType value = nullIf value (stringLiteral "")
@@ -267,5 +322,5 @@ parseValue DecimalType value = nullIf value (stringLiteral "")
 parseValue (DateType format) value = strToDate value $ stringLiteral format
 
 makeSelectWB :: Int -> MappingItem -> SelectTerm
-makeSelectWB i item = SelectAs item.columnName (parseValue item.columnType value)
+makeSelectWB i item = SelectAs item.selectFromWBas (parseValue item.columnType value)
   where value = (wrap $ "c" <> (show i)) .. "celldata"
