@@ -5,7 +5,7 @@ import Prelude
 import Data.Foldable (intercalate)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype, wrap, unwrap)
-import Data.Traversable (class Traversable)
+
 
 newtype ScalarExpr = ScalarExpr String
 derive instance newtypeScalarExpr :: Newtype ScalarExpr _
@@ -34,14 +34,14 @@ instance showRelation :: Show Relation where
   show (Table s) = s
   show (Query s) = s
 
-query :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> Relation
+query :: Array SelectTerm -> FromExpr -> Array JoinExpr -> Maybe ScalarExpr -> Array ScalarExpr -> Relation
 query = query' "select\n"
 
-queryDistinct :: forall f g. Traversable f => Traversable g => f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> Relation
+queryDistinct :: Array SelectTerm -> FromExpr -> Array JoinExpr -> Maybe ScalarExpr -> Array ScalarExpr -> Relation
 queryDistinct = query' "select distinct\n"
 
-query' :: forall f g. Traversable f => Traversable g => String -> f SelectTerm -> FromExpr -> g JoinExpr -> Maybe ScalarExpr -> Relation
-query' selectType selectTerms fromExpr joinExprs whereExpr = Query $
+query' :: String -> Array SelectTerm -> FromExpr -> Array JoinExpr -> Maybe ScalarExpr -> Array ScalarExpr -> Relation
+query' selectType selectTerms fromExpr joinExprs whereExpr orderBy = Query $
   selectType <>
   (intercalate ",\n" $ map toSql $ selectTerms) <> "\n" <>
   (unwrap fromExpr) <> "\n" <>
@@ -49,6 +49,9 @@ query' selectType selectTerms fromExpr joinExprs whereExpr = Query $
   case whereExpr of
     Just expr -> "where\n" <> (unwrap expr)
     Nothing -> ""
+  <> case orderBy of
+    [] -> ""
+    _ -> "\norder by " <> (intercalate ", " $ map unwrap $ orderBy)
 
 join' :: JoinType -> Relation -> Alias -> Maybe ScalarExpr -> JoinExpr
 join' joinType source alias onExpr = wrap case source of
@@ -99,8 +102,8 @@ from :: Relation -> FromExpr
 from (Table s) = wrap $ "from " <> s
 from (Query q) = wrap $ "from (\n" <> q <> "\n) " -- some alias may be required
 
-star :: SelectTerm
-star = SelectTerm $ wrap "*"
+star :: Alias -> SelectTerm
+star (Alias a) = SelectTerm $ wrap $ a <> ".*"
 
 notIn :: ScalarExpr -> Array ScalarExpr -> Maybe ScalarExpr
 notIn value [] = Nothing
@@ -141,3 +144,8 @@ isNotDistinctFrom :: ScalarExpr -> ScalarExpr -> ScalarExpr
 isNotDistinctFrom x y = ScalarExpr $ (unwrap x) <> " <=> " <> (unwrap y)
 
 infixl 8 isNotDistinctFrom as <=>
+
+assignVar :: ScalarExpr -> ScalarExpr -> ScalarExpr
+assignVar x y = ScalarExpr $ (unwrap x) <> " := " <> (unwrap y)
+
+infixl 8 assignVar as :=

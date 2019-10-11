@@ -20,7 +20,7 @@ import Data.FoldableWithIndex (forWithIndex_)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (wrap)
 import Data.NonEmpty (foldl1, (:|))
-import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr, SelectTerm(..), and, as, equal, insertFrom, insertValues, intLiteral, join, leftJoin, notInSubQuery, nullIf, plus, query, queryDistinct, setUserVar, strToDate, stringLiteral, tuple, varExpr, (..), (<=>))
+import SQL (Alias(..), JoinExpr, Relation(..), ScalarExpr(..), SelectTerm(..), and, as, equal, insertFrom, insertValues, intLiteral, join, leftJoin, notInSubQuery, nullIf, plus, query, queryDistinct, setUserVar, star, strToDate, stringLiteral, tuple, varExpr, (..), (:=), (<=>))
 import UploadPlan (ColumnType(..), TemplateId(..), ToManyRecord, ToOne(..), UploadPlan, UploadStrategy(..), UploadTable, WorkbenchId(..))
 
 type MatchedRow = {recordid :: Int, rownumber :: Int, rowid :: Int}
@@ -61,9 +61,8 @@ doUpload uploadTable = do
   remark $ "insert new " <> uploadTable.tableName <> " records"
   insertNewRecords wbTemplateMappingItemId uploadTable
 
-  remark $ "find newly created " <> uploadTable.tableName <> " records"
-  findExistingRecords wbTemplateMappingItemId uploadTable
-
+  remark $ "match newly created " <> uploadTable.tableName <> " records"
+  findNewRecords wbTemplateMappingItemId uploadTable
 
 handleToManys :: UploadTable -> Script
 handleToManys ut = do
@@ -86,7 +85,7 @@ handleToManyToOne toManyTable index (ToOne {foreignKey, table}) = do
   insertNewRecords wbTemplateMappingItemId table
 
   remark $ "find newly created " <> table.tableName <> " records for " <> toManyTable <> " " <> (show index)
-  findExistingRecords wbTemplateMappingItemId table
+  findNewRecords wbTemplateMappingItemId table
 
 
 handleToOnes :: UploadTable -> Script
@@ -106,7 +105,7 @@ handleToOne ut (ToOne {foreignKey, table}) = do
   insertNewRecords wbTemplateMappingItemId table
 
   remark $ "find newly created " <> table.tableName <> " records"
-  findExistingRecords wbTemplateMappingItemId table
+  findNewRecords wbTemplateMappingItemId table
 
   where
     wbTemplateMappingItemId = varExpr $ toOneIdColumnVar ut.tableName foreignKey
@@ -129,9 +128,53 @@ rowsWithValuesFor workbenchtemplatemappingitemid =
    ((d .. "workbenchrowid") `equal` (r .. "workbenchrowid")) `and`
    ((d .. "workbenchtemplatemappingitemid") `equal` workbenchtemplatemappingitemid)
   )
+  []
   where
     r = Alias "r"
     d = Alias "d"
+
+
+findNewRecords :: ScalarExpr -> UploadTable -> Script
+findNewRecords wbTemplateMappingItemId table = do
+  tell [ setUserVar "new_id" $ wrap "last_insert_id()" ]
+  tell [ setUserVar "row_number" $ intLiteral 0 ]
+  tell $ pure $
+    insertFrom
+    ( query
+      [ SelectTerm $ wbRow .. "workbenchrowid"
+      , SelectTerm $ valuesWithId .. table.idColumn
+      , SelectTerm $ wbRow .. "rownumber"
+      , SelectTerm $ wbTemplateMappingItemId
+      ]
+      ( rowsFromWB (varExpr "worbkenchid") mappingItems excludeRows `as` wbRow)
+      [ join
+        ( query
+          [ SelectAs table.idColumn $ (varExpr "row_number") `plus` (varExpr "new_id")
+          , SelectTerm $ (varExpr "row_number") := ((varExpr "row_number") `plus` (intLiteral 1))
+          , star newValues
+          ]
+          ( valuesFromWB (varExpr "workbenchid") mappingItems excludeRows `as` newValues )
+          []
+          Nothing
+          []
+        )
+        valuesWithId
+        (Just $ newVals <=> wbVals)
+      ]
+      Nothing
+      []
+    )
+    ["workbenchrowid", "celldata", "rownumber", "workbenchtemplatemappingitemid"]
+    "workbenchdataitem"
+  where
+    t = Alias "t"
+    wbRow = Alias "wbrow"
+    newValues = Alias "newvalues"
+    valuesWithId = Alias "valueswithid"
+    mappingItems = map (parseMappingItem t) table.mappingItems <> toOneMappingItems table t <> toManyMappingItems table
+    newVals = tuple $ mappingItems <#> \{selectFromWBas} -> valuesWithId .. selectFromWBas
+    wbVals = tuple $ mappingItems <#> \{selectFromWBas} -> wbRow .. selectFromWBas
+    excludeRows = rowsWithValuesFor wbTemplateMappingItemId
 
 
 findExistingRecords :: ScalarExpr -> UploadTable -> Script
@@ -146,6 +189,7 @@ findExistingRecords wbTemplateMappingItemId table = tell $ pure $
     (Table table.tableName `as` t)
     (snoc (joinToManys t table) joinWB)
     (foldl' and $ strategyToWhereClause table.strategy t # fromFoldable)
+    []
   )
   ["workbenchrowid", "celldata", "rownumber", "workbenchtemplatemappingitemid"]
   "workbenchdataitem"
@@ -165,6 +209,7 @@ rowsFromWB wbId mappingItems excludeRows =
   (Table "workbenchrow" `as` r)
   (mapWithIndex joinWBCell mappingItems)
   (Just $ ((r .. "workbenchid") `equal` wbId) `and` ((r .. "workbenchrowid") `notInSubQuery` excludeRows))
+  []
   where
     r = Alias "r"
     c i = Alias $ "c" <> (show i)
@@ -182,6 +227,7 @@ insertNewRecords wbTemplateMappingItemId table = tell $ pure $
     (valuesFromWB (varExpr "workbenchid") (mappingItems <> toManyMappingItems table) excludeRows `as` nv)
     []
     Nothing
+    []
   )
   columns
   table.tableName
@@ -201,6 +247,7 @@ valuesFromWB wbId mappingItems excludeRows =
   (Table "workbenchrow" `as` r)
   (mapWithIndex joinWBCell mappingItems)
   (Just $ ((r .. "workbenchid") `equal` wbId) `and` ((r .. "workbenchrowid") `notInSubQuery` excludeRows))
+  ((\i -> ScalarExpr i.selectFromWBas) <$> mappingItems)
   where
     r = Alias "r"
     c i = Alias $ "c" <> (show i)
