@@ -1,21 +1,20 @@
 module Data.SQL.Smart where
 
-import Prelude (identity, ($), (>>>))
 import Data.SQL.Syntax
 
 import Data.Array (uncons)
 import Data.Maybe (Maybe(..))
 import Data.NonEmpty (NonEmpty(..))
+import Prelude (map, ($), (>>>))
 
 
-class Fromable a where
-  toTableRef :: a -> TableRef
+insertValues :: String -> Array String -> Array (Array Expr) -> Statement
+insertValues table cols values =
+  InsertValues { table: TableName table, columns: map ColumnName cols, values: values }
 
-instance fromableTableRef :: Fromable TableRef where
-  toTableRef = identity
-
-instance fromableTableFactor :: Fromable TableFactor where
-  toTableRef = TableFactor
+insertFrom :: String -> Array String -> QueryExpr -> Statement
+insertFrom table cols query =
+  InsertFrom { table: TableName table, columns: map ColumnName cols, query: query}
 
 distinct :: QueryExpr -> QueryExpr
 distinct (QueryExpr q) = QueryExpr $ q { selectType = SelectDistinct }
@@ -114,6 +113,9 @@ project name = IdentExpr $ Identifier name
 
 infixl 9 projectFrom as ..
 
+userVar :: String -> Expr
+userVar = VarExpr
+
 and :: Expr -> Expr -> Expr
 and = AndExpr
 
@@ -131,3 +133,14 @@ plus x y = BinOp PlusOp x y
 
 notInSubQuery :: Expr -> QueryExpr -> Expr
 notInSubQuery x sq = NotInPred x sq
+
+subqueryAs :: Alias -> QueryExpr -> TableRef
+subqueryAs as query = TableFactor $ SubQuery {query: query, as: as, columns: []}
+
+isNotDistinctFrom :: Expr -> Expr -> Expr
+isNotDistinctFrom = IsNotDistinctFrom
+
+infixl 9 isNotDistinctFrom as <=>
+
+row :: Array Expr -> Expr
+row = RowExpr

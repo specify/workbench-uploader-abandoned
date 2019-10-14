@@ -6,7 +6,20 @@ import Data.NonEmpty (NonEmpty)
 
 data Statement
   = QueryStatement QueryExpr
-  -- | InsertStatement String
+  | InsertValues InsertValues
+  | InsertFrom InsertFrom
+
+type InsertValues =
+  { table :: TableName
+  , columns :: Array ColumnName
+  , values :: Array (Array Expr)
+  }
+
+type InsertFrom =
+  { table :: TableName
+  , columns :: Array ColumnName
+  , query :: QueryExpr
+  }
 
 data SelectType
   = SelectAll
@@ -72,7 +85,7 @@ data Expr
   | IsUnknownExpr Expr
   | IsNull Expr
   | IsNotNull Expr
-  | IsNotDistinctFrom Expr
+  | IsNotDistinctFrom Expr Expr
   | CompOp CompOp Expr Expr
   | CompAll CompOp Expr SubQuery
   | CompAny CompOp Expr SubQuery

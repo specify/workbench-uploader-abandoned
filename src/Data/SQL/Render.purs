@@ -1,24 +1,66 @@
 module Data.SQL.Render where
 
+import Data.SQL.Syntax
 import Prelude
 
 import Control.Monad.Writer (Writer, execWriter, tell)
 import Data.Array (intercalate, uncons)
+import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
 import Data.NonEmpty (NonEmpty(..))
 import Data.Traversable (sequence_)
-import Data.SQL.Syntax
+import Debug.Trace (traceM)
 
 
 type StatementM = Writer String Unit
 
+notImplemented :: forall a. a -> StatementM
+notImplemented a = do
+  tell "<not implemented>"
+  traceM a
+
 render :: StatementM -> String
 render s = execWriter s
+
+separatedBy :: forall a. StatementM -> (a -> StatementM) -> Array a -> StatementM
+separatedBy separator render xs =
+  sequence_ $ intercalate [separator] $ map (render >>> pure) xs
+
+commaSeparated :: forall a. (a -> StatementM) -> Array a -> StatementM
+commaSeparated = separatedBy cs
 
 renderStatement :: Statement -> StatementM
 renderStatement (QueryStatement q) = do
   renderQuery q
   tell ";\n"
+
+renderStatement (InsertValues i) = do
+  tell "insert into"
+  sp
+  renderTableName i.table
+  sp
+  inParens $ commaSeparated renderColumnName i.columns
+  nl
+  tell "values"
+  nl
+  separatedBy cnl (inParens <<< commaSeparated renderExpr) i.values
+  tell ";\n"
+
+renderStatement (InsertFrom i) = do
+  tell "insert into"
+  sp
+  renderTableName i.table
+  sp
+  inParens $ commaSeparated renderColumnName i.columns
+  nl
+  renderQuery i.query
+  tell ";\n"
+
+renderTableName :: TableName -> StatementM
+renderTableName (TableName n) = tell $ escapeIdentifier n
+
+renderColumnName :: ColumnName -> StatementM
+renderColumnName (ColumnName n) = tell $ escapeIdentifier n
 
 nl :: StatementM
 nl = tell "\n"
@@ -29,6 +71,9 @@ sp = tell " "
 cs :: StatementM
 cs = tell ", "
 
+cnl :: StatementM
+cnl = tell ",\n"
+
 renderQuery :: QueryExpr -> StatementM
 renderQuery (QueryExpr q) = case uncons q.selectTerms of
   Nothing -> tell mempty
@@ -36,21 +81,18 @@ renderQuery (QueryExpr q) = case uncons q.selectTerms of
     renderSelectType q.selectType
     sp
     renderSelectTerms (NonEmpty head tail)
-    nl
     renderFrom q.from
-    nl
     renderWhere q.where_
-    nl
     renderOrderBy q.orderBy
-  -- nl
   -- renderLimit q.limit
 
 renderOrderBy :: Array OrderTerm -> StatementM
 renderOrderBy [] = tell mempty
 renderOrderBy terms = do
-    tell "order by"
-    sp
-    commaSeparated renderOrderTerm terms
+  nl
+  tell "order by"
+  sp
+  commaSeparated renderOrderTerm terms
   where
     renderOrderTerm (Ascending x) = renderExpr x >>= \_ -> tell " asc"
     renderOrderTerm (Descending x) = renderExpr x >>= \_ -> tell " desc"
@@ -58,6 +100,7 @@ renderOrderBy terms = do
 renderWhere :: Maybe Expr -> StatementM
 renderWhere Nothing = tell mempty
 renderWhere (Just x) = do
+  nl
   tell "where "
   renderExpr x
 
@@ -96,9 +139,9 @@ renderJoinedTable (LeftJoin l r o) = do
   renderTableRef r
   renderJoinSpec o
 
-renderJoinedTable (RightJoin _ _ _) = notImplemented
-renderJoinedTable (NaturalLeftJoin _ _) = notImplemented
-renderJoinedTable (NaturalRightJoin _ _) = notImplemented
+renderJoinedTable p@(RightJoin _ _ _) = notImplemented p
+renderJoinedTable p@(NaturalLeftJoin _ _) = notImplemented p
+renderJoinedTable p@(NaturalRightJoin _ _) = notImplemented p
 
 
 
@@ -132,8 +175,15 @@ renderTableFactor (Table {name: TableName name, as}) = do
     Nothing ->
       tell mempty
 
-renderTableFactor (SubQuery _) = notImplemented
-renderTableFactor (Tables _) = notImplemented
+renderTableFactor (SubQuery {query, as: Alias a, columns}) = do
+  inParens do
+    nl
+    renderQuery query
+    nl
+  tell " as "
+  tell a
+
+renderTableFactor p@(Tables _) = notImplemented p
 renderTableFactor Dual = tell "dual"
 
 renderSelectType :: SelectType -> StatementM
@@ -221,12 +271,12 @@ renderExpr (IsNotNull p) = inParens do
   sp
   tell "is not null"
 
-renderExpr (IsNotDistinctFrom p) = inParens do
-  renderExpr p
+renderExpr (IsNotDistinctFrom x y) = inParens do
+  renderExpr x
   sp
   tell "<=>"
   sp
-  renderExpr p
+  renderExpr y
 
 renderExpr (CompOp op x y) = inParens do
   renderExpr x
@@ -235,8 +285,8 @@ renderExpr (CompOp op x y) = inParens do
   sp
   renderExpr y
 
-renderExpr (CompAll _ _ _) = notImplemented
-renderExpr (CompAny _ _ _) = notImplemented
+renderExpr p@(CompAll _ _ _) = notImplemented p
+renderExpr p@(CompAny _ _ _) = notImplemented p
 
 renderExpr (InPred x sq) = inParens do
   renderExpr x
@@ -259,13 +309,13 @@ renderExpr (NotInPred x sq) = inParens do
     nl
 
 
-renderExpr (Between _ _ _) = notImplemented
-renderExpr (NotBetween _ _ _) = notImplemented
-renderExpr (SoundsLike _ _) = notImplemented
-renderExpr (Like _ _) = notImplemented
-renderExpr (NotLike _ _) = notImplemented
-renderExpr (Regexp _ _) = notImplemented
-renderExpr (NotRegexp _ _) = notImplemented
+renderExpr p@(Between _ _ _) = notImplemented p
+renderExpr p@(NotBetween _ _ _) = notImplemented p
+renderExpr p@(SoundsLike _ _) = notImplemented p
+renderExpr p@(Like _ _) = notImplemented p
+renderExpr p@(NotLike _ _) = notImplemented p
+renderExpr p@(Regexp _ _) = notImplemented p
+renderExpr p@(NotRegexp _ _) = notImplemented p
 
 
 renderExpr (BinOp op x y) = inParens do
@@ -283,15 +333,23 @@ renderExpr (FCallExpr (FCall {name, args})) = do
   tell name
   inParens $ commaSeparated renderExpr args
 
-renderExpr (VarExpr s) = notImplemented
-renderExpr (UnaryOp _ _) = notImplemented
-renderExpr (RowExpr _) = notImplemented
-renderExpr (SubQueryExpr _) = notImplemented
-renderExpr (Exists _) = notImplemented
+renderExpr (VarExpr s) = tell $ "@" <> escapeIdentifier s
+
+renderExpr p@(UnaryOp _ _) = notImplemented p
+
+renderExpr (RowExpr values) = inParens $ commaSeparated renderExpr values
+
+renderExpr (SubQueryExpr {query, as: Alias a, columns}) = do
+  inParens do
+    nl
+    renderQuery query
+    nl
+  tell " as "
+  tell a
 
 
-commaSeparated :: forall a. (a -> StatementM) -> Array a -> StatementM
-commaSeparated render xs = sequence_ $ intercalate [cs] $ map (render >>> pure) xs
+renderExpr p@(Exists _) = notImplemented p
+
 
 renderBinOp :: BinOp -> StatementM
 renderBinOp AndOp = tell "&"
@@ -328,46 +386,4 @@ escapeString = identity -- todo
 escapeIdentifier :: String -> String
 escapeIdentifier = identity -- todo
 
--- renderScalarExpr :: ScalarExpr -> StatementM
--- renderScalarExpr (StringLiteral s) = "'" <> s <> "'"
--- renderScalarExpr (IntLiteral i) = show i
--- renderScalarExpr (VarDeRef v) = "@" <> v
--- renderScalarExpr (BinOp op x y) = renderBinOp op x y
--- renderScalarExpr (UnaryOp op x) = renderUnaryOp op x
--- renderScalarExpr (DotRef source key) = source <> "." <> key
-
--- renderUnaryOp :: UnaryOp -> ScalarExpr -> String
--- renderUnaryOp op x = case op of
---   NotOp -> "not (" <> renderScalarExpr x <> ")"
---   IsNullOp -> "is null (" <> renderScalarExpr x <> ")"
-
--- renderBinOp :: BinOp -> ScalarExpr -> ScalarExpr -> String
--- renderBinOp op x y = case op of
---   EqualOp -> x' <> " = " <> y'
---   AndOp -> x' <> " and " <> y'
---   OrOp -> x' <> " or " <> y'
---   where
---     x' = "(" <> renderScalarExpr x <> ")"
---     y' = "(" <> renderScalarExpr y <> ")"
-
--- renderFromClause :: FromClause -> String
--- renderFromClause (FromClause {as, relation}) = case relation of
---  (TableRef name) -> ""
---  (QueryLiteral queryExpr) -> ""
-
--- renderJoinClause :: JoinClause -> String
--- renderJoinClause (JoinClause j) = case j.on of
---   Just expr -> j.joinType <> " " <> source <> " " <> as <> " on " <> renderScalarExpr expr
---   Nothing -> j.joinType <> " " <> source <> " " <> as
---   where source = case j.source of
---           TableRef name -> name
---           QueryLiteral expr -> "(\n" <> renderQuery expr <> "\n)"
---         as = fromMaybe "" j.as
-
--- renderWhere :: Maybe ScalarExpr -> String
--- renderWhere (Just expr) = "\nwhere " <> renderScalarExpr expr
--- renderWhere Nothing = ""
-
-notImplemented :: StatementM
-notImplemented = tell "<not implemented>"
 
