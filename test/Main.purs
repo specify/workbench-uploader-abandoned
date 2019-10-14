@@ -1,8 +1,9 @@
 module Test.Main where
 
 import Prelude hiding (join)
-import SqlLang
-import SqlSmart
+import Data.SQL.Syntax
+import Data.SQL.Smart
+import Data.SQL.Render
 
 import Debug.Trace (trace, traceM)
 import Effect (Effect)

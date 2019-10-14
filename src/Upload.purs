@@ -1,8 +1,8 @@
 module Upload where
 
 import Prelude hiding (join)
-import SqlLang
-import SqlSmart
+import Data.SQL.Syntax
+import Data.SQL.Smart
 
 import Data.Array (foldl, mapWithIndex)
 import Data.FoldableWithIndex (foldlWithIndex)

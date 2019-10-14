@@ -1,9 +1,9 @@
-module SqlSmart where
+module Data.SQL.Smart where
 
-import Prelude
-import SqlLang
+import Prelude (identity, ($), (>>>))
+import Data.SQL.Syntax
 
-import Data.Array (snoc, uncons)
+import Data.Array (uncons)
 import Data.Maybe (Maybe(..))
 import Data.NonEmpty (NonEmpty(..))
 
